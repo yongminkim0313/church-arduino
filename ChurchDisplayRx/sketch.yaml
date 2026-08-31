@@ -1,0 +1,4 @@
+# arduino-cli 가 자동으로 읽는다. 한글 전체 폰트(1.82MB) 때문에
+# 기본 파티션(1.31MB APP)으로는 빌드가 들어가지 않으므로 Huge APP(3MB) 고정.
+default_fqbn: esp32:esp32:esp32:PartitionScheme=huge_app
+default_port: /dev/cu.usbserial-5B34014705

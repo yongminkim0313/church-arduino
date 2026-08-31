@@ -1,0 +1,8 @@
+# arduino-cli 가 자동으로 읽는다.
+#
+# PartitionScheme=huge_app : 기본 파티션(1.2MB APP)은 94% 까지 차서 여유가 없다.
+#   C3 Super Mini 는 4MB 플래시이고 huge_app 은 딱 4MB 레이아웃이라 그대로 들어간다.
+#   (app 3MB + spiffs 875KB + nvs/otadata/coredump = 정확히 4.00MB)
+# CDCOnBoot=cdc            : Super Mini 는 USB-시리얼 칩이 없다. 이걸 켜야
+#   USB 로 시리얼 모니터가 보인다.
+default_fqbn: esp32:esp32:esp32c3:PartitionScheme=huge_app,CDCOnBoot=cdc
