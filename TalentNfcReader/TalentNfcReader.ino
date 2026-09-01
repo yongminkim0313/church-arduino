@@ -3,6 +3,9 @@
 // NTAG-213 키링을 PN532(I2C)로 읽어 2.8" ILI9341 TFT 에 잔액을 보여준다.
 // 평소에는 딥슬립으로 대기하다가 터치 패드로 깨어나고, 무입력 15초 뒤 다시 잠든다.
 //
+// 달란트 잔액은 jesusdream.kr 의 jdServer(/api/talent)가 관리한다.
+// 리더는 저장하지 않고 매번 서버에 묻는다 — 리더가 여러 대여도 잔액이 하나로 유지된다.
+//
 // ── 조작 ──────────────────────────────────────────────────────────
 //   터치(GPIO4) 짧게  : 잠든 상태면 깨우기 / 깨어 있으면 적립↔소모 모드 전환
 //   키링 태깅         : 현재 모드대로 적립 또는 소모하고 결과를 표시
@@ -20,9 +23,14 @@
 
 #include <TFT_eSPI.h>
 #include "FontKR22.h"
+#include "TalentTypes.h"
 #include <Wire.h>
 #include <Adafruit_PN532.h>
-#include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <ChurchSecrets.h>   // WiFi/서버 인증정보 (저장소 밖)
 #include <esp_sleep.h>
 
 // ── 핀 (핀맵은 여기 한 곳에서만 관리한다) ─────────────────────────
@@ -50,11 +58,11 @@
 #define TALENT_STEP 1
 
 // ── 달란트 저장 위치 ──────────────────────────────────────────────
-// CLAUDE.md 의 미결정 항목. 지금은 "리더 측 저장(옵션 B)"으로 두었다.
-//   · 태그(옵션 A)는 누구나 쓰기 가능해 위변조가 쉽다
-//   · 리더 측이면 추가 부품 없이 ESP32 내장 플래시(NVS)만으로 된다
-// 태그 저장으로 바꾸려면 talentLoad/talentSave 두 함수만 갈아끼우면 된다.
-Preferences prefs;
+// 서버(jdServer /api/talent)가 단일 출처다. 리더는 캐시하지 않는다.
+//   · 리더를 여러 대 놓아도 잔액이 하나로 모인다
+//   · 적립/소모 내역이 서버에 남아 "왜 이 잔액인지" 설명할 수 있다
+//   · 대신 네트워크가 끊기면 처리할 수 없다 — 이때는 화면과 소리로 실패를 알린다
+#define HTTP_TIMEOUT_MS 6000
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -95,11 +103,62 @@ static void sndFail()     { beep(300, 300); }                               // �
 static void sndMode()     { beep(1400, 60); }                               // 모드 전환 짧은 음
 
 // ══════════════════════════════════════════════════════════════════
-//  달란트 저장 (리더 측 · NVS)
+//  서버 통신 (jdServer /api/talent)
 // ══════════════════════════════════════════════════════════════════
-// NVS 키는 15자 제한이라 UID 문자열(최대 14자)을 그대로 쓴다.
-static int32_t talentLoad(const char* uid)             { return prefs.getInt(uid, 0); }
-static void    talentSave(const char* uid, int32_t v)  { prefs.putInt(uid, v); }
+// POST /earn 또는 /spend. path 는 "earn" | "spend".
+static TalentResult talentPost(const char* path, const char* uid, int32_t amount) {
+  TalentResult r;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    snprintf(r.reason, sizeof(r.reason), "%s", "네트워크 없음");
+    return r;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();          // 자체 서버라 인증서 검증은 생략(센서 보드들과 동일)
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+
+  char url[128];
+  snprintf(url, sizeof(url), "%s/%s", TALENT_API_BASE, path);
+  if (!http.begin(client, url)) {
+    snprintf(r.reason, sizeof(r.reason), "%s", "연결 실패");
+    return r;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-talent-key", TALENT_DEVICE_KEY);   // 서버의 TALENT_DEVICE_KEY 와 대조
+
+  char body[192];
+  snprintf(body, sizeof(body),
+           "{\"uid\":\"%s\",\"amount\":%ld,\"device\":\"%s\"}",
+           uid, (long)amount, TALENT_DEVICE_ID);
+
+  int code = http.POST(body);
+  String payload = (code > 0) ? http.getString() : String();
+  http.end();
+
+  JsonDocument doc;
+  bool parsed = !payload.isEmpty() && !deserializeJson(doc, payload);
+
+  if (code == 200 && parsed && doc["success"].as<bool>()) {
+    r.ok      = true;
+    r.balance = doc["balance"] | 0;
+    r.delta   = doc["delta"]   | 0;
+    return r;
+  }
+
+  if (code == 409) {             // 잔액 부족 — 서버가 현재 잔액도 함께 준다
+    r.lowBalance = true;
+    r.balance = parsed ? (doc["balance"] | 0) : 0;
+    snprintf(r.reason, sizeof(r.reason), "%s", "잔액이 모자랍니다");
+    return r;
+  }
+  if (code == 401) { snprintf(r.reason, sizeof(r.reason), "%s", "기기 인증 실패"); return r; }
+  if (code <= 0)   { snprintf(r.reason, sizeof(r.reason), "%s", "서버 연결 실패"); return r; }
+
+  snprintf(r.reason, sizeof(r.reason), "서버 오류 %d", code);
+  return r;
+}
 
 // ══════════════════════════════════════════════════════════════════
 //  화면
@@ -139,7 +198,29 @@ static void drawIdle() {
   krFont(false);
 }
 
-// 태깅 결과. delta 0 이면 실패로 본다.
+// 서버에 묻는 동안 보여줄 화면. 무반응처럼 보이지 않게 한다.
+static void drawWorking() {
+  tft.fillRect(0, 52, tft.width(), tft.height() - 52, TFT_BLACK);
+  krFont(true);
+  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("확인 중", tft.width() / 2, 150);
+  krFont(false);
+}
+
+// 네트워크·서버 문제. 잔액은 건드리지 않았다는 뜻이다.
+static void drawError(const char* reason) {
+  tft.fillRect(0, 52, tft.width(), tft.height() - 52, TFT_BLACK);
+  krFont(true);
+  tft.setTextColor(TFT_RED, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("처리하지 못했습니다", tft.width() / 2, 145);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawString(reason, tft.width() / 2, 182);
+  krFont(false);
+}
+
+// 태깅 결과. delta 0 이면 잔액 부족으로 본다.
 static void drawResult(const char* uid, int32_t balance, int32_t delta) {
   tft.fillRect(0, 52, tft.width(), tft.height() - 52, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
@@ -174,6 +255,10 @@ static void drawResult(const char* uid, int32_t balance, int32_t delta) {
 //  딥슬립 — 진입 경로는 이 함수 하나로 통일한다
 // ══════════════════════════════════════════════════════════════════
 static void goToDeepSleep() {
+  // 라디오를 먼저 끈다. 켠 채로 잠들면 전류가 크게 새어 배터리가 빨리 준다.
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+
   sndPowerOff();          // beep() 안에서 재생 시간을 기다리므로 잘리지 않는다
   backlight(false);
   tft.writecommand(0x10); // ILI9341 sleep in
@@ -206,24 +291,22 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
   strncpy(lastUid, s, sizeof(lastUid) - 1);
   lastTagMs = now;
 
-  int32_t bal = talentLoad(s);
+  drawWorking();                       // 서버 왕복이 1초쯤 걸릴 수 있어 진행 표시
 
-  if (mode == MODE_EARN) {
-    bal += TALENT_STEP;
-    talentSave(s, bal);
-    sndEarn();
-    drawResult(s, bal, +TALENT_STEP);
-    Serial.printf("적립 %s → %ld\n", s, (long)bal);
-  } else if (bal >= TALENT_STEP) {
-    bal -= TALENT_STEP;
-    talentSave(s, bal);
-    sndSpend();
-    drawResult(s, bal, -TALENT_STEP);
-    Serial.printf("소모 %s → %ld\n", s, (long)bal);
+  TalentResult r = talentPost(mode == MODE_EARN ? "earn" : "spend", s, TALENT_STEP);
+
+  if (r.ok) {
+    (r.delta > 0 ? sndEarn : sndSpend)();
+    drawResult(s, r.balance, r.delta);
+    Serial.printf("%s %s → %ld\n", r.delta > 0 ? "적립" : "소모", s, (long)r.balance);
+  } else if (r.lowBalance) {
+    sndFail();
+    drawResult(s, r.balance, 0);
+    Serial.printf("잔액 부족 %s (%ld)\n", s, (long)r.balance);
   } else {
-    sndFail();                       // 잔액 부족
-    drawResult(s, bal, 0);
-    Serial.printf("잔액 부족 %s (%ld)\n", s, (long)bal);
+    sndFail();
+    drawError(r.reason);
+    Serial.printf("실패 %s — %s\n", s, r.reason);
   }
 
   lastActivity = millis();
@@ -248,8 +331,6 @@ void setup() {
   tft.setRotation(0);          // 240x320 세로
   tft.fillScreen(TFT_BLACK);
 
-  prefs.begin("talent", false);
-
   // 깨어난 이유를 남겨 두면 현장 디버깅이 쉽다
   esp_sleep_wakeup_cause_t why = esp_sleep_get_wakeup_cause();
   Serial.printf("기상 원인: %d %s\n", (int)why,
@@ -257,6 +338,26 @@ void setup() {
 
   sndPowerOn();
   backlight(true);
+
+  // 잔액은 서버가 갖고 있으므로 깨어날 때마다 접속한다.
+  // 접속에 몇 초가 걸릴 수 있어 화면에 알린다(멈춘 것처럼 보이지 않게).
+  drawHeader();
+  krFont(true);
+  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("연결 중", tft.width() / 2, 150);
+  krFont(false);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) delay(200);
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("WiFi 연결됨 %s\n", WiFi.localIP().toString().c_str());
+  } else {
+    // 연결 못 해도 계속 진행한다. 태깅할 때 실패 사유를 화면에 보여준다.
+    Serial.println("WiFi 연결 실패 — 태깅 시 서버 요청이 실패합니다.");
+  }
 
   Wire.begin(PIN_NFC_SDA, PIN_NFC_SCL);
   nfc.begin();
