@@ -93,7 +93,9 @@ ESP32-S3 는 **터치하면 값이 커진다**(구형 ESP32 와 반대). 깨우�
 
 ## 달란트 저장 — 서버 DB
 
-잔액은 **jdServer(jesusdream.kr)의 MongoDB** 가 단일 출처다. 리더는 저장하지 않고
+잔액은 **yvServer(youthvision.co.kr)의 MongoDB** 가 단일 출처다.
+같은 API 가 jdServer(jesusdream.kr)에도 올라가 있어, 접속 서버를 바꾸려면
+`ChurchSecrets.h` 의 `TALENT_API_BASE` 한 줄만 고치면 된다(기기 키는 두 서버가 같다). 리더는 저장하지 않고
 매번 서버에 묻는다. 리더를 여러 대 놓아도 잔액이 하나로 모이고, 적립·소모 내역이
 서버에 남아 "왜 이 잔액인지" 설명할 수 있다.
 

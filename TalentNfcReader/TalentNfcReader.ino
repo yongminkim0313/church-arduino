@@ -3,7 +3,8 @@
 // NTAG-213 키링을 PN532(I2C)로 읽어 2.8" ILI9341 TFT 에 잔액을 보여준다.
 // 평소에는 딥슬립으로 대기하다가 터치 패드로 깨어나고, 무입력 15초 뒤 다시 잠든다.
 //
-// 달란트 잔액은 jesusdream.kr 의 jdServer(/api/talent)가 관리한다.
+// 달란트 잔액은 youthvision.co.kr 의 yvServer(/api/talent)가 관리한다.
+// (같은 API 가 jesusdream.kr 에도 있다. 접속 주소는 ChurchSecrets.h 의 TALENT_API_BASE 하나로 바꾼다)
 // 리더는 저장하지 않고 매번 서버에 묻는다 — 리더가 여러 대여도 잔액이 하나로 유지된다.
 //
 // ── 조작 ──────────────────────────────────────────────────────────
@@ -58,7 +59,7 @@
 #define TALENT_STEP 1
 
 // ── 달란트 저장 위치 ──────────────────────────────────────────────
-// 서버(jdServer /api/talent)가 단일 출처다. 리더는 캐시하지 않는다.
+// 서버(yvServer /api/talent)가 단일 출처다. 리더는 캐시하지 않는다.
 //   · 리더를 여러 대 놓아도 잔액이 하나로 모인다
 //   · 적립/소모 내역이 서버에 남아 "왜 이 잔액인지" 설명할 수 있다
 //   · 대신 네트워크가 끊기면 처리할 수 없다 — 이때는 화면과 소리로 실패를 알린다
@@ -103,7 +104,7 @@ static void sndFail()     { beep(300, 300); }                               // �
 static void sndMode()     { beep(1400, 60); }                               // 모드 전환 짧은 음
 
 // ══════════════════════════════════════════════════════════════════
-//  서버 통신 (jdServer /api/talent)
+//  서버 통신 (yvServer /api/talent)
 // ══════════════════════════════════════════════════════════════════
 // POST /earn 또는 /spend. path 는 "earn" | "spend".
 static TalentResult talentPost(const char* path, const char* uid, int32_t amount) {
