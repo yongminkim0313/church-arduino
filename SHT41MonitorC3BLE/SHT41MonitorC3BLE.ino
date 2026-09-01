@@ -54,7 +54,7 @@
 #define SCAN_SECONDS   5
 #define RETRY_MS       3000    // 접속 실패/끊김 후 재시도 간격
 
-const char* sensorName = "외부 센서";   // 디스플레이 상단·범례에 표시될 이름
+const char* sensorName = "거실";   // 디스플레이 상단·범례에 표시될 이름
 
 SensirionI2cSht4x sht4x;
 

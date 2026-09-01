@@ -117,4 +117,5 @@ python3 tools/img2rgb565_dither.py church_logo.png \
 - **센서 → 디스플레이 직결**: `SHT41MonitorC3/` 가 mDNS 로 디스플레이를 찾아 WebSocket 으로 직접 송신 (완료)
 - 인증정보는 `ChurchSecrets` 라이브러리로 분리 — [secrets.example.h](secrets.example.h) 참고
 - 한글 폰트 생성: `tools/ttf2vlw.py` (TTF → TFT_eSPI VLW 스무스폰트)
+- **NFC 달란트 리더**: `TalentNfcReader/` — ESP32-S3 + PN532 + ILI9341, 터치 웨이크업·딥슬립 (실기 검증 전)
 - **부팅 로고 → 온습도 화면 전환** 흐름 추가.
