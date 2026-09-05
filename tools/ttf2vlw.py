@@ -15,7 +15,7 @@ TFT_eSPI 의 안티에일리어싱 폰트(VLW)를 만든다. 내장 폰트와 �
       --size 36 --var FontNum36 --chars "0123456789.-% C" \
       -o ChurchDisplayRx/FontNum36.h
 
-  # 한글 상용 2350자 전체 (크다 → LittleFS 용 .vlw 로)
+  # 한글 음절 전체 11,172자 (크다 → LittleFS 용 .vlw 로)
   python3 tools/ttf2vlw.py .../NanumGothic.ttf --size 16 --ks1001 -o full16.vlw
 
 VLW 포맷 (모두 big-endian int32):
@@ -34,8 +34,25 @@ PRESET_UI = (
 )
 
 def ks1001_syllables():
-    """한글 음절 영역 전체(11,172자)."""
+    """한글 음절 영역 전체(11,172자). 14px 이면 2.4MB 라 PROGMEM 에는 못 넣는다."""
     return "".join(chr(c) for c in range(0xAC00, 0xD7A4))
+
+
+def ks2350_syllables():
+    """KS X 1001 완성형 상용 2350자.
+
+    실제 한국어 문서에 쓰이는 음절은 사실상 이 집합 안에 들어온다.
+    EUC-KR 로 인코딩되는 한글 영역(0xB0A1~0xC8FE)이 정확히 그 2350자다."""
+    out = []
+    for c in range(0xAC00, 0xD7A4):
+        ch = chr(c)
+        try:
+            b = ch.encode("euc-kr")
+        except UnicodeEncodeError:
+            continue
+        if len(b) == 2 and 0xB0 <= b[0] <= 0xC8:
+            out.append(ch)
+    return "".join(out)
 
 def build(ttf, size, chars, index=0):
     font = ImageFont.truetype(ttf, size, index=index)
@@ -90,7 +107,8 @@ def main():
     p.add_argument("--ascii", action="store_true", default=None,
                    help="ASCII 0x20~0x7E 포함 (기본: 켜짐)")
     p.add_argument("--no-ascii", dest="ascii", action="store_false")
-    p.add_argument("--ks1001", action="store_true", help="한글 음절 11,172자 전체")
+    p.add_argument("--ks1001", action="store_true", help="한글 음절 11,172자 전체 (크다 — LittleFS 용)")
+    p.add_argument("--ks2350", action="store_true", help="KS X 1001 상용 2350자 (PROGMEM 에 들어가는 크기)")
     p.add_argument("--var", default="", help="C 배열 이름 (주면 .h, 없으면 .vlw)")
     p.add_argument("-o", "--out", required=True)
     a = p.parse_args()
@@ -102,6 +120,8 @@ def main():
         chars |= set(PRESET_UI)
     if a.ks1001:
         chars |= set(ks1001_syllables())
+    if a.ks2350:
+        chars |= set(ks2350_syllables())
     chars |= set(a.chars)
     chars = sorted(chars)
 

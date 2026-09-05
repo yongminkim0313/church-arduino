@@ -19,4 +19,10 @@ for d in ChurchDisplayRx ChurchDisplayRxBLE; do
       --var FontNum38 -o "$d/FontNum38.h"
 done
 
+# 달란트 리더 — 서버가 내려주는 문구가 무엇이든 나와야 해서 상용 2350자를 담는다.
+# 전체 11,172자는 14px 에서 2.4MB 라 Huge APP(3MB)에 들어가지 않는다.
+echo "▶ TalentNfcReader/FontKR14.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 14 --ks2350 --preset ui \
+    --var FontKR14 -o TalentNfcReader/FontKR14.h
+
 echo "✅ 완료"

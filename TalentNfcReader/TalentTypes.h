@@ -11,3 +11,9 @@ struct TalentResult {
   bool    lowBalance = false;   // 잔액 부족(서버 409)
   char    reason[32] = "";
 };
+
+// 값을 범위 안으로 조인다.
+// .ino 본문에 두면 자동 삽입되는 함수 프로토타입이 template 앞에 끼어들어
+// "'T' does not name a type" 로 깨진다. 그래서 타입들과 함께 헤더에 둔다.
+template <typename T>
+static inline T clampT(T v, T lo, T hi) { return v < lo ? lo : (v > hi ? hi : v); }

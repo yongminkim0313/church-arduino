@@ -12,7 +12,8 @@ set -e
 cd "$(dirname "$0")/.."
 
 PORT="${2:-/dev/cu.usbmodem101}"
-FQBN="esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,CDCOnBoot=cdc"
+# 한글 2350자 폰트(473KB) 때문에 기본 파티션(1.31MB)으로는 여유가 없다 → Huge APP(3MB).
+FQBN="esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,CDCOnBoot=cdc,PartitionScheme=huge_app"
 
 # CLAUDE.md 핀맵 그대로
 FLAGS="-DUSER_SETUP_LOADED=1 \
