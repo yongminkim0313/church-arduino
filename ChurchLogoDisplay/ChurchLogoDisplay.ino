@@ -5,7 +5,8 @@
 // 라이브러리: TFT_eSPI (Bodmer) — User_Setup_Select.h 에서 Setup25_TTGO_T_Display.h 활성화 필요
 // 화면 방향: setRotation(1) → 가로 240x135
 // 백라이트: GPIO4 (LED_BUILTIN 없음)
-// 색상: RGB565(16비트). 스프라이트 pushImage 에 배열 넘길 땐 (uint16_t *) 캐스팅.
+// 색상: RGB565(16비트). 스프라이트 pushImage 에 배열 넘길 땐 (uint16_t *) 캐스팅 +
+//       setSwapBytes(true) 가 필요하다(아래 drawLogoCard 주석 참고).
 //
 // 자세한 보드/업로드 설정은 ../README.md 참고.
 
@@ -54,8 +55,14 @@ static void drawLogoCard(int cx, int cy) {
   spr.drawRoundRect(cx - w / 2, cy - h / 2, w, h, 14, tft.color565(205, 216, 232));
 
 #if HAVE_LOGO_IMAGE
-  // 디더링된 RGB565 로고. 배열 인자에는 (uint16_t *) 캐스팅이 필요하다.
+  // 디더링된 RGB565 로고.
+  // TFT_eSprite 는 내부 버퍼를 빅엔디언으로 들고 있고(pushSprite 가 바이트를 그대로 흘려보낸다),
+  // 일반 uint16_t 배열은 리틀엔디언이다. setSwapBytes(true) 를 켜야 복사하며 순서를 맞춰준다.
+  // 켜지 않으면 0xF800(빨강)이 0x00F8(짙은 파랑)으로 뒤바뀐다.
+  bool oldSwap = spr.getSwapBytes();
+  spr.setSwapBytes(true);
   spr.pushImage(cx - LOGO_W / 2, cy - LOGO_H / 2, LOGO_W, LOGO_H, (uint16_t *)logo_data);
+  spr.setSwapBytes(oldSwap);
 #else
   // 로고 헤더가 없을 때의 플레이스홀더: 심플한 십자가
   uint16_t col = tft.color565(28, 60, 120);

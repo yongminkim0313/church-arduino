@@ -15,6 +15,8 @@
 //     const uint16_t logo_data[96*96] PROGMEM = { 0x0000, ... };
 //
 //   스케치는 이 배열을 spr.pushImage(x, y, LOGO_W, LOGO_H, (uint16_t *)logo_data) 로 그립니다.
+//   이때 spr.setSwapBytes(true) 가 필요합니다 — 스프라이트 내부 버퍼는 빅엔디언이라
+//   켜지 않으면 0xF800(빨강)이 0x00F8(짙은 파랑)으로 뒤바뀝니다.
 
 #define HAVE_LOGO_IMAGE 0
 #define LOGO_W 96

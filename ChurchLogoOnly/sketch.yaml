@@ -1,0 +1,4 @@
+# arduino-cli 가 자동으로 읽는다.
+# 로고 배열은 64.8KB 뿐이라 기본 파티션(1.31MB APP)으로 충분하다.
+default_fqbn: esp32:esp32:esp32
+default_port: /dev/cu.usbserial-5B34014705

@@ -62,7 +62,14 @@ static void drawLogoCard(int cx, int cy) {
   spr.fillRoundRect(cx - w / 2, cy - h / 2, w, h, 14, TFT_WHITE);
   spr.drawRoundRect(cx - w / 2, cy - h / 2, w, h, 14, tft.color565(205, 216, 232));
 #if HAVE_LOGO_IMAGE
+  // 디더링된 RGB565 로고.
+  // TFT_eSprite 는 내부 버퍼를 빅엔디언으로 들고 있고(pushSprite 가 바이트를 그대로 흘려보낸다),
+  // 일반 uint16_t 배열은 리틀엔디언이다. setSwapBytes(true) 를 켜야 복사하며 순서를 맞춰준다.
+  // 켜지 않으면 0xF800(빨강)이 0x00F8(짙은 파랑)으로 뒤바뀐다.
+  bool oldSwap = spr.getSwapBytes();
+  spr.setSwapBytes(true);
   spr.pushImage(cx - LOGO_W / 2, cy - LOGO_H / 2, LOGO_W, LOGO_H, (uint16_t *)logo_data);
+  spr.setSwapBytes(oldSwap);
 #else
   uint16_t col = tft.color565(28, 60, 120);
   spr.fillRect(cx - 6,  cy - 36, 12, 72, col);

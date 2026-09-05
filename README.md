@@ -44,10 +44,30 @@ arduino-cli lib install "TFT_eSPI" "WebSockets" "ArduinoJson" "NimBLE-Arduino" "
 
 TFT_eSPI 는 `Setup25_TTGO_T_Display.h` 활성화가 필요하다 — [docs/TFT_eSPI_setup.md](docs/TFT_eSPI_setup.md)
 
+## RGB565 이미지 바이트 순서 (자주 틀리는 곳)
+
+`uint16_t logo_data[] = { 0xF800, ... }` 같은 배열을 화면에 그릴 때, **어느 경로로 넣느냐에 따라
+`setSwapBytes` 설정이 반대**다. 잘못 쓰면 빨강(`0xF800`)이 짙은 파랑(`0x00F8`)으로 뒤바뀐다.
+
+| 경로 | 필요한 설정 | 쓰는 스케치 |
+|------|-------------|-------------|
+| `tft.pushImage(...)` — 화면에 직접 | `tft.setSwapBytes(true)` | ChurchLogoOnly |
+| `spr.pushImage(...)` → `spr.pushSprite(...)` | `spr.setSwapBytes(true)` | ChurchLogoDisplay, ChurchWeatherStation |
+| 스프라이트 도형/텍스트 (`fillRect`, `drawString` …) | 설정 불필요 | 전부 |
+
+이유: `TFT_eSprite` 는 내부 버퍼를 **빅엔디언**으로 들고 있고(`pushSprite` 가 바이트를 그대로
+SPI 로 흘려보낸다), ESP32 의 `uint16_t` 배열은 **리틀엔디언**이다. `setSwapBytes(true)` 가
+복사·전송 과정에서 순서를 맞춰준다. 도형/텍스트 함수(`drawFastHLine` 등)는 내부에서 이미
+`color>>8 | color<<8` 로 저장하므로 영향을 받지 않는다 — 그래서 배경은 멀쩡한데 로고만
+색이 뒤집히는 증상이 나온다.
+
+색 전체가 음화처럼 반전되는 것은 다른 문제이며 `tft.invertDisplay(1)` 로 잡는다.
+
 ## 스케치 목록
 
 | 스케치 | 보드 | 하는 일 |
 |--------|------|---------|
+| `ChurchLogoOnly` | T-Display | 교회 로고 한 장만 전체화면(240×135)으로 표시 |
 | `ChurchLogoDisplay` | T-Display | 교회 로고 + 비둘기 애니메이션 |
 | `ChurchWeatherStation` | T-Display | 로고 인트로 → SHT41 온습도 표시 + 서버 POST |
 | `SHT41Monitor` | T-Display | 온습도 측정 + 서버 POST |
