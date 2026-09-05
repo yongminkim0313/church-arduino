@@ -18,6 +18,10 @@ TFT_eSPI 의 안티에일리어싱 폰트(VLW)를 만든다. 내장 폰트와 �
   # 한글 음절 전체 11,172자 (크다 → LittleFS 용 .vlw 로)
   python3 tools/ttf2vlw.py .../NanumGothic.ttf --size 16 --ks1001 -o full16.vlw
 
+  # KS X 1001 상용 2,350자 — 전체의 1/5 크기로 실사용 한글은 거의 다 커버
+  python3 tools/ttf2vlw.py .../NanumGothic.ttf --size 16 --ks2350 \
+      --var FontKR16 -o GodlifeScheduleNext/FontKR16.h
+
 VLW 포맷 (모두 big-endian int32):
   헤더 24B : gCount, version, size, 0, ascent, descent
   글리프   : gCount × 28B = unicode, height, width, xAdvance, dY, dX, 0
