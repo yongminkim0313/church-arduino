@@ -19,4 +19,14 @@ for d in ChurchDisplayRx ChurchDisplayRxBLE; do
       --var FontNum38 -o "$d/FontNum38.h"
 done
 
+# GodlifeScheduleNext — KS X 1001 상용 2,350자 16px + 큰 숫자 30px.
+# 여기만 음절 전체(11,172자)를 안 쓴다. 글리프 메트릭이 RAM 을 먹는데(글리프당 12B)
+# 전체면 135KB 라 HTTPS 핸드셰이크가 쓸 힙이 남지 않는다. 상용 2,350자면 29KB.
+echo "▶ GodlifeScheduleNext/FontKR16.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 16 --ks-common --chars "·▶●○◆…—" \
+    --var FontKR16 -o GodlifeScheduleNext/FontKR16.h
+echo "▶ GodlifeScheduleNext/FontNum30.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 30 --no-ascii --chars "0123456789:.-DAY " \
+    --var FontNum30 -o GodlifeScheduleNext/FontNum30.h
+
 echo "✅ 완료"

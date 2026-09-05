@@ -26,6 +26,8 @@ T-Display에 교회 로고 + 비둘기 날아드는 애니메이션 표시. 위�
 ./tools/make-fonts.sh
 ```
 
+`ChurchDisplayRx` 계열은 음절 전체(11,172자) 12px 를, `GodlifeScheduleNext` 는
+상용 2,350자 16px 를 쓴다(HTTPS 가 쓸 힙을 남기려고 줄였다).
 기본으로 `~/Library/Fonts/NanumGothicBold.ttf` 를 쓴다. 다른 폰트를 쓰려면 경로를 넘긴다:
 `./tools/make-fonts.sh /경로/폰트.ttf`
 
@@ -55,6 +57,8 @@ TFT_eSPI 는 `Setup25_TTGO_T_Display.h` 활성화가 필요하다 — [docs/TFT_
 | `ChurchDisplayRx` | T-Display | WebSocket 서버. 센서 푸시를 한글로 표시, 온습도 그래프 |
 | `SHT41MonitorC3BLE` | ESP32-C3 | 위와 같되 **BLE** 로 디스플레이에 직접 송신 |
 | `ChurchDisplayRxBLE` | T-Display | **BLE** GATT 서버판 디스플레이 |
+| `GodlifeScheduleNext` | T-Display | 하루동행 다음 일정 표시. 넘치는 글은 마퀴로 흐름 |
+| `TalentNfcReader` | ESP32-S3 | NFC 키링 달란트 적립·소모 (PN532 + ILI9341) |
 
 ## 하드웨어
 
@@ -118,4 +122,7 @@ python3 tools/img2rgb565_dither.py church_logo.png \
 - 인증정보는 `ChurchSecrets` 라이브러리로 분리 — [secrets.example.h](secrets.example.h) 참고
 - 한글 폰트 생성: `tools/ttf2vlw.py` (TTF → TFT_eSPI VLW 스무스폰트)
 - **NFC 달란트 리더**: `TalentNfcReader/` — ESP32-S3 + PN532 + ILI9341, 터치 웨이크업·딥슬립 (실기 검증 전)
+- **하루동행 일정 표시**: `GodlifeScheduleNext/` — jdServer `/api/godlife/schedule/next` 를 읽어
+  다음 일정을 표시, 화면을 넘치는 글은 마퀴로 흘림 (보드에 구워 실제 응답 파싱까지 확인 —
+  [README](GodlifeScheduleNext/README.md))
 - **부팅 로고 → 온습도 화면 전환** 흐름 추가.
