@@ -1,0 +1,4 @@
+# arduino-cli 가 자동으로 읽는다.
+# 기본 파티션(1.31MB APP)으로도 들어가지만 82% 로 여유가 없어 Huge APP(3MB) 을 쓴다.
+# 업로드 포트는 기기마다 달라 지정하지 않았다:  arduino-cli upload -p /dev/cu.usbserial-XXXX SHT41Monitor
+default_fqbn: esp32:esp32:esp32:PartitionScheme=huge_app
