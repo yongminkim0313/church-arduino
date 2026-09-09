@@ -40,6 +40,34 @@ def tight(im):
     return im.crop(bb)
 
 
+def clear_outside(im, tol=26):
+    """네 모서리에서 흰 여백을 타고 들어가며 투명으로 바꾼다.
+
+    탭 버튼은 둥근 사각형이라 자른 뒤에도 모서리 바깥에 흰 자국이 남는다.
+    그 자리를 투명으로 두면 기기가 비침색으로 구워 화면 바탕색이 그대로 비친다
+    (talentArt.js 의 TRANSPARENT_KEY). 그림 안쪽의 흰색(눈동자·글자 테두리)은
+    바깥과 이어져 있지 않아 채움이 닿지 않는다 — 그래서 통째로 지우지 않고
+    모서리에서 타고 들어가는 방식을 쓴다.
+    """
+    im = im.convert('RGBA')
+    # 채움은 RGB 에서만 돈다. 흰 여백을 눈에 안 띄는 표식색으로 바꾼 뒤 알파를 깎는다.
+    MARK = (255, 0, 255)
+    rgb = im.convert('RGB')
+    w, h = rgb.size
+    for xy in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+        if sum(abs(a - b) for a, b in zip(rgb.getpixel(xy), (255, 255, 255))) <= tol * 3:
+            ImageDraw.floodfill(rgb, xy, MARK, thresh=tol)
+    px, out = rgb.load(), im.load()
+    n = 0
+    for y in range(h):
+        for x in range(w):
+            if px[x, y] == MARK:
+                r, g, b, _ = out[x, y]
+                out[x, y] = (r, g, b, 0)
+                n += 1
+    return im, n
+
+
 def flatten(im, bg):
     """알파를 배경색에 합성한다."""
     if im.mode != 'RGBA':
@@ -59,6 +87,9 @@ GREY_SLOPE, GREY_INTER, GREY_KEEP = 0.624, 30.9, 0.118
 
 def to_grey(im):
     # 컬러 버튼을 비활성(회색) 버전으로 바꾼다.
+    # 알파가 있으면 떼어 두었다가 끝에 도로 붙인다 — 투명하게 만들어 둔 바깥
+    # 여백이 회색으로 메워지면 안 된다(clear_outside 가 먼저 돈다).
+    alpha = im.getchannel('A') if im.mode == 'RGBA' else None
     im = im.convert('RGB')
     w, h = im.size
     p = im.load()
@@ -72,6 +103,8 @@ def to_grey(im):
             # 원래 색을 아주 조금만 남긴다 — 완전한 무채색보다 덜 죽어 보인다
             q[x, y] = tuple(int(max(0, min(255, t + (c - lum) * GREY_KEEP)))
                             for c in (r, g, b))
+    if alpha is not None:
+        out.putalpha(alpha)
     return out
 
 
@@ -157,6 +190,15 @@ def build(src_dir):
         if spec.get('tighten'):
             im = tight(im)
         im = flatten(im, spec['bg'])
+
+        # 탭 버튼은 다른 것 위에 얹히는 그림이라 바깥 여백을 투명으로 둔다 —
+        # 기기가 비침색으로 구워 탭 줄의 바탕색이 모서리로 비친다.
+        # 회색 변환보다 **먼저** 해야 한다: 회색으로 바꾸고 나면 흰 여백이
+        # 흰색이 아니게 되어(190쯤) 모서리에서 타고 들어가지 못한다.
+        cleared = 0
+        if key.startswith('tab_'):
+            im, cleared = clear_outside(im)
+
         if spec.get('grey'):
             im = to_grey(im)
         if spec.get('radius'):
@@ -165,7 +207,8 @@ def build(src_dir):
         h = HEIGHTS[key]
         w = round(im.width * h / im.height)
         made[key] = im.resize((w, h), Image.LANCZOS)
-        print(f'  {key:10s} {w:3d}x{h:3d}  {w*h*2:6,d}B')
+        note = f'  투명 {cleared:,}칸' if cleared else ''
+        print(f'  {key:10s} {w:3d}x{h:3d}  {w*h*2:6,d}B{note}')
     return made
 
 

@@ -1115,6 +1115,9 @@ static void reportSeen(const char* uid) {
 // 것을 같게 둔다 — 다르면 페이지를 넘길 때 몇 건이 소리 없이 건너뛰어진다.
 // hasMore 는 "더 예전 것이 남았는지" 다. 리더가 스스로 알 방법이 없어 서버가 알려 준다.
 static uint8_t feedRows();      // 화면 치수에 딸린 값이라 정의는 아래 화면 부분에 있다
+// 기본 인자가 있는 함수는 .ino 가 프로토타입을 자동으로 만들어 주지 않는다.
+// 정의는 화면 부분에 있고, 그보다 먼저 부르는 곳이 있어 여기서 미리 알린다.
+static bool drawArtFile(const ArtFile& a, int x, int y, bool transp = false);
 
 static bool feedFetch(uint8_t page) {
   JsonDocument filter;
@@ -1414,7 +1417,7 @@ static void drawTabs() {
       a.base = 0;
       strlcpy(a.file, on ? b[i].file : b[i].fileOff, sizeof(a.file));
       a.w = b[i].w; a.h = b[i].h;
-      if (drawArtFile(a, x, y)) continue;
+      if (drawArtFile(a, x, y, true)) continue;   // 둥근 모서리 바깥은 비침
       // 파일을 읽다 실패하면 아래 글자 칸으로 내려간다
     }
 
@@ -1575,7 +1578,14 @@ static uint16_t inkDir(bool up) { return up ? inkEarn() : inkSpend(); }
 static uint16_t inkTab()   { return (tab == TAB_SPEND) ? inkSpend()
                                   : (tab == TAB_EARN)  ? inkEarn() : C_NEUTRAL; }
 
-static bool drawArtFile(const ArtFile& a, int x, int y) {
+// 비침색(color key). RGB565 에는 알파가 없어서, 서버가 투명했던 자리를 이 색으로
+// 채워 두고 여기서 그 색만 건너뛴다(TFT_eSPI 의 pushImage 투명 인자).
+// 서버(talentArt.js TRANSPARENT_KEY)와 같은 값이라야 한다.
+#define ART_TRANSPARENT 0xF81F   // 자홍 — 그림에 거의 안 나오는 색
+
+// transp 를 주면 비침색 자리를 건너뛴다. 내용 영역 위에 얹히는 그림(완료·카드)만
+// 그렇게 굽는다 — 헤더·탭·배경·시작화면은 자리를 꽉 채우는 그림이라 필요 없다.
+static bool drawArtFile(const ArtFile& a, int x, int y, bool transp) {
   char path[64];
   snprintf(path, sizeof(path), "%s/%s", ART_DIR, a.file);
   fs::File f = LittleFS.open(path, "r");
@@ -1588,7 +1598,8 @@ static bool drawArtFile(const ArtFile& a, int x, int y) {
   if (a.w > 240) { f.close(); return false; }
   for (int j = 0; j < a.h; j++) {
     if (f.read((uint8_t*)line, a.w * 2) != a.w * 2) { f.close(); return false; }
-    tft.pushImage(x, y + j, a.w, 1, line);
+    if (transp) tft.pushImage(x, y + j, a.w, 1, line, ART_TRANSPARENT);
+    else        tft.pushImage(x, y + j, a.w, 1, line);
   }
   f.close();
   return true;
@@ -2051,11 +2062,26 @@ static void drawDone() {
 
   // 그림이 있으면 그림에 자리를 몰아준다. 이 화면은 "되었습니다" 를 그림 한 장으로
   // 말하는 자리라, 글자는 얼마와 남은 포인트 두 줄이면 충분하다.
+  //
+  // 그 카드의 그림이 먼저다 — 출석 카드면 출석 그림, 간식 카드면 간식 그림이
+  // 뜬다. 카드에 그림이 없을 때만 지급·사용 공통 그림으로 떨어진다.
   int y = top + 10;
   bool drew = false;
-  if (doneHas[idx] && doneFile[idx].h <= contentH() - 70) {
-    drew = drawArtFile(doneFile[idx], (tft.width() - doneFile[idx].w) / 2, y);
-    if (drew) y += doneFile[idx].h + 6;
+  ArtFile pic;
+  bool hasPic = false;
+  if (curCard >= 0 && cards[curCard].img[0]) {
+    pic.base = 0;
+    strlcpy(pic.file, cards[curCard].img, sizeof(pic.file));
+    pic.w = cards[curCard].imgW;
+    pic.h = cards[curCard].imgH;
+    hasPic = true;
+  } else if (doneHas[idx]) {
+    pic = doneFile[idx];
+    hasPic = true;
+  }
+  if (hasPic && pic.h <= contentH() - 70 && pic.w <= tft.width() - BORDER * 2) {
+    drew = drawArtFile(pic, (tft.width() - pic.w) / 2, y, true);
+    if (drew) y += pic.h + 6;
   }
 
   char amt[16];

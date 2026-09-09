@@ -79,7 +79,7 @@ SPI 로 흘려보낸다), ESP32 의 `uint16_t` 배열은 **리틀엔디언**이�
 | `SHT41MonitorC3BLE` | ESP32-C3 | 위와 같되 **BLE** 로 디스플레이에 직접 송신 |
 | `ChurchDisplayRxBLE` | T-Display | **BLE** GATT 서버판 디스플레이 |
 | `GodlifeScheduleNext` | T-Display | 하루동행 다음 일정 표시. 넘치는 글은 마퀴로 흐름 |
-| `TalentNfcReader` | ESP32-S3 | NFC 키링 달란트 적립·소모 (PN532 + ILI9341) |
+| `TalentNfcReader` | ESP32-S3 | NFC 키링 펀펀포인트 지급·사용 (PN532 + ILI9341 + XPT2046 터치) |
 
 ## 하드웨어
 
@@ -142,7 +142,9 @@ python3 tools/img2rgb565_dither.py church_logo.png \
 - **센서 → 디스플레이 직결**: `SHT41MonitorC3/` 가 mDNS 로 디스플레이를 찾아 WebSocket 으로 직접 송신 (완료)
 - 인증정보는 `ChurchSecrets` 라이브러리로 분리 — [secrets.example.h](secrets.example.h) 참고
 - 한글 폰트 생성: `tools/ttf2vlw.py` (TTF → TFT_eSPI VLW 스무스폰트)
-- **NFC 달란트 리더**: `TalentNfcReader/` — ESP32-S3 + PN532 + ILI9341, 터치 웨이크업·딥슬립 (실기 검증 전)
+- **NFC 펀펀포인트 리더**: `TalentNfcReader/` — ESP32-S3 + PN532 + ILI9341(XPT2046 터치).
+  어린이 키링과 지급/사용 카드를 두 단계로 받고, 화면(시작·헤더·탭·배경·완료·카드 그림)은
+  yvServer 에서 갈아 끼운다 (실기 동작 확인)
 - **하루동행 일정 표시**: `GodlifeScheduleNext/` — jdServer `/api/godlife/schedule/next` 를 읽어
   다음 일정을 표시, 화면을 넘치는 글은 마퀴로 흘림 (보드에 구워 실제 응답 파싱까지 확인 —
   [README](GodlifeScheduleNext/README.md))
