@@ -24,6 +24,11 @@ done
 echo "▶ TalentNfcReader/FontKR14.h 생성 중..."
 python3 tools/ttf2vlw.py "$TTF" --size 14 --ks2350 --preset ui \
     --var FontKR14 -o TalentNfcReader/FontKR14.h
+# 20px 는 이름·안내문처럼 멀리서 읽혀야 하는 줄에만 쓴다(916KB).
+# VLW 는 구운 크기로만 그려져 setTextSize 로 키울 수 없어서 두 벌을 든다.
+echo "▶ TalentNfcReader/FontKR20.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 20 --ks2350 --preset ui \
+    --var FontKR20 -o TalentNfcReader/FontKR20.h
 
 # GodlifeScheduleNext — KS X 1001 상용 2,350자 16px + 큰 숫자 30px.
 # 달란트 리더와 같은 이유다. 글리프 메트릭이 RAM 을 먹는데(글리프당 12B)
