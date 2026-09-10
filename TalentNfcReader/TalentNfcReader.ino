@@ -305,6 +305,14 @@ static bool    doneHas[2] = { false, false };
 static CardEntry cards[CARD_MAX];
 static uint8_t   cardCount = 0;
 
+// ── 모바일 조회 링크 ──────────────────────────────────────────────
+// 서버가 /config 로 미리 준다. 태깅한 그 자리에서 카드에 써 넣으려면 주소를
+// 이미 알고 있어야 한다 — 서버에 묻고 오면 카드는 벌써 떠난 뒤다.
+static PassEntry passes[PASS_MAX];
+static uint8_t   passCount  = 0;
+static char      passBase[48] = "";     // "youthvision.co.kr/t/" (스킴은 아래 코드로 줄여 담는다)
+static uint8_t   passUriId  = 0x04;     // NDEF URI 코드 (0x04 = "https://")
+
 // ── 이름표 ────────────────────────────────────────────────────────
 // 부팅할 때 GET /api/talent/roster 로 받아 둔다. 태그를 대는 순간 이름을
 // 띄우려면 서버 응답을 기다릴 수 없어서다(왕복이 1초 가까이 걸린다).
@@ -568,6 +576,41 @@ static bool cfgFetch() {
   readMenu(c, "earnMenu",  cfg.earnMenu);
   readMenu(c, "spendMenu", cfg.spendMenu);
   clampSel();
+
+  // 모바일 조회 링크 표. 키가 없으면(옛 서버) 건드리지 않는다 —
+  // 표가 사라지면 이미 확인해 둔 카드까지 다시 읽게 된다.
+  if (doc["passes"].is<JsonObject>()) {
+    JsonObject pj = doc["passes"];
+    passUriId = pj["uriPrefix"] | 0x04;
+    const char* pb = pj["base"] | "";
+    if (pb[0]) strlcpy(passBase, pb, sizeof(passBase));
+
+    JsonObject pm = pj["map"];
+    if (!pm.isNull()) {
+      // static 으로 둔다 — cfgFetch 는 JsonDocument 와 TLS 클라이언트로 스택이
+      // 이미 빡빡해서, 여기에 1.3KB 를 더 얹으면 넘칠 수 있다.
+      static PassEntry next[PASS_MAX];
+      uint8_t n = 0;
+      for (JsonPair kv : pm) {
+        if (n >= PASS_MAX) break;
+        const char* u = kv.key().c_str();
+        const char* t = kv.value().as<const char*>();
+        if (!u || !t || !t[0]) continue;
+        if (!isCardUid(u)) continue;                    // 한글 이름 키는 리더가 쓸 일이 없다
+        if (strlen(u) >= sizeof(next[0].uid) || strlen(t) >= sizeof(next[0].token)) continue;
+        strlcpy(next[n].uid, u, sizeof(next[0].uid));
+        strlcpy(next[n].token, t, sizeof(next[0].token));
+        // 토큰이 그대로면 "이미 써 있다" 는 판정을 물려받는다. 설정을 받을 때마다
+        // 처음부터 다시 읽으면 5분마다 카드를 훑게 된다.
+        const int8_t old = passIndexOf(u);
+        next[n].ok = (old >= 0 && !strcmp(passes[old].token, t)) ? passes[old].ok : false;
+        n++;
+      }
+      memcpy(passes, next, sizeof(PassEntry) * n);
+      passCount = n;
+      Serial.printf("[링크] 표 %u개 (%s…) 받음\n", passCount, passBase);
+    }
+  }
 
   // 배경. 키가 없으면 건드리지 않는다.
   if (doc["bg"].is<JsonArray>()) {
@@ -1078,6 +1121,73 @@ static int8_t cardIndexOf(const char* uid) {
   for (uint8_t i = 0; i < cardCount; i++)
     if (!strcmp(cards[i].uid, uid)) return (int8_t)i;
   return -1;
+}
+
+// ── 모바일 조회 링크 쓰기 ─────────────────────────────────────────
+//
+// /talents 의 키는 실물 카드가 없는 아이는 **한글 이름**이다(지금 50명 중 대부분).
+// 리더가 읽는 것은 16진 UID 라 둘은 절대 만나지 않으므로, 표에서 카드 UID 만 골라
+// 담는다. 아이가 실물 키링을 받으면(미등록카드 → 기존 사용자 매칭) 그때 UID 로
+// 바뀌고 서버가 링크를 새로 내주므로, 다음 설정 갱신에 저절로 표에 들어온다.
+static bool isCardUid(const char* s) {
+  const size_t n = strlen(s);
+  if (n != 8 && n != 14 && n != 20) return false;       // ISO14443A 는 4·7·10 바이트
+  for (size_t i = 0; i < n; i++)
+    if (!isdigit((unsigned char)s[i]) && !(s[i] >= 'A' && s[i] <= 'F')) return false;
+  return true;
+}
+
+static int8_t passIndexOf(const char* uid) {
+  for (uint8_t i = 0; i < passCount; i++)
+    if (!strcmp(passes[i].uid, uid)) return (int8_t)i;
+  return -1;
+}
+
+// 카드에 이미 이 주소가 들어 있는지. NDEF URI 레코드는 4페이지부터 12바이트가
+// 머리말이고 7페이지부터 주소가 이어진다(ntag2xx_WriteNDEFURI 가 그렇게 쓴다).
+// 28자짜리 주소면 7장을 읽어 40ms 남짓 — 한 번 확인하면 다시 읽지 않는다.
+static bool passAlreadyOn(const char* url, uint8_t len) {
+  uint8_t buf[4];
+  for (uint8_t i = 0; i < len; i += 4) {
+    if (!nfc.ntag2xx_ReadPage(7 + i / 4, buf)) return false;
+    for (uint8_t j = 0; j < 4 && i + j < len; j++)
+      if (buf[j] != (uint8_t)url[i + j]) return false;
+  }
+  return true;
+}
+
+// **카드가 선택된 상태에서만 부를 것.** 태그를 알아본 직후(CC 읽기 옆)가 그 자리다.
+// capBytes 는 그 카드의 사용자 영역 크기 — CC 세 번째 바이트 × 8 (NTAG213 은 144).
+static void passEnsureWritten(const char* uid, uint16_t capBytes) {
+  if (!passBase[0]) return;
+  const int8_t i = passIndexOf(uid);
+  if (i < 0 || passes[i].ok) return;                    // 표에 없거나 이미 확인했다
+
+  char url[64];
+  const int n = snprintf(url, sizeof(url), "%s%s", passBase, passes[i].token);
+  if (n <= 0 || (size_t)n >= sizeof(url)) return;
+  // ntag2xx_WriteNDEFURI 는 머리말 12바이트 + 끝표시 1바이트를 더 쓴다
+  if ((uint16_t)n + 13 > capBytes) {
+    Serial.printf("[링크] 주소가 카드 용량(%u바이트)보다 깁니다 — 건너뜁니다\n", capBytes);
+    passes[i].ok = true;                                // 다시 시도해도 소용없다
+    return;
+  }
+
+  if (passAlreadyOn(url, (uint8_t)n)) { passes[i].ok = true; return; }
+
+  Serial.printf("[링크] %s → %s 쓰는 중…\n", uid, url);
+  // Adafruit 의 dataLen 이 uint8_t 라 255 를 넘길 수 없다. NTAG215/216 을 쓰게 되면
+  // 앞쪽 255바이트만 쓰는 셈인데, 주소가 40자 남짓이라 문제가 되지 않는다.
+  const uint8_t cap8 = capBytes > 255 ? 255 : (uint8_t)capBytes;
+  if (nfc.ntag2xx_WriteNDEFURI(passUriId, url, cap8)) {
+    passes[i].ok = true;
+    Serial.println("[링크] 썼습니다 — 이제 휴대전화로 대면 잔액이 보입니다");
+  } else {
+    // 카드를 일찍 뗐을 때가 대부분이다. 다음 태깅에 다시 해 본다.
+    // 실패한 교환은 대상 선택 상태를 망가뜨려 그 뒤 읽기가 전부 실패한다.
+    Serial.println("[링크] 쓰지 못했습니다 — 다음 태깅에 다시 시도합니다");
+    nfc.SAMConfig();
+  }
 }
 
 // 지금 이 기기가 받을 수 있는 카드인지. 지급 리더에 간식 카드를 대는 사고를 막는다.
@@ -2213,6 +2323,31 @@ static void uidToStr(const uint8_t* uid, uint8_t len, char* out, size_t cap) {
 
 // 키링이 아닌 것을 댔을 때의 안내. 쿨다운은 handleTag 와 같은 변수를 쓴다 —
 // 카드를 리더 위에 올려 둔 채로 두면 안내가 끝없이 다시 뜨기 때문이다.
+// 응답은 하는데 NDEF 가 아닌 카드. 지급/사용 카드로 쓰려고 댄 것일 수 있으니
+// 서버에 알려 관리자 화면의 '미등록카드' 에 뜨게 하고, 무엇을 하라고 알려 준다.
+// (예전에는 이런 카드를 "키링이 아닙니다" 로 내치기만 해서, 지급/사용 카드를
+//  리더에 대도 아무 데도 나타나지 않아 등록할 길이 없었다)
+static void unknownCard(const char* s) {
+  uint32_t now = millis();
+  if (!strcmp(s, lastUid) && now - lastTagMs < cfg.tagCooldownMs) return;
+  strncpy(lastUid, s, sizeof(lastUid) - 1);
+  lastTagMs = now;
+
+  reportSeen(s);
+
+  sndFail();
+  clearContent();
+  useFont(14);
+  tft.setTextDatum(MC_DATUM);
+  contentText(inkSub());
+  tft.drawString("처음 보는 카드입니다", tft.width() / 2, contentMid() - 14);
+  contentText(inkMuted());
+  tft.drawString("관리자 화면에서 등록하세요", tft.width() / 2, contentMid() + 14);
+  useFont(0);
+  overlayUntil = millis() + 2200;
+  lastActivity = millis();
+}
+
 static void rejectTag(const char* s) {
   uint32_t now = millis();
   if (!strcmp(s, lastUid) && now - lastTagMs < cfg.tagCooldownMs) return;
@@ -2650,6 +2785,33 @@ void loop() {
       if (uidLen == 4 || uidLen == 7 || uidLen == 10) {
         char dbg[24];
         uidToStr(uid, uidLen, dbg, sizeof(dbg));
+
+        // ── 7바이트가 아니면 조용히 넘긴다 ──
+        //
+        // 우리 키링과 카드는 모두 7바이트(NTAG213)다. 4바이트로 답하는 것은
+        // 휴대폰·교통카드·사원증이고, 특히 휴대폰은 지날 때마다 **다른** UID 를
+        // 내놓는다. 그것마다 "아닙니다" 를 띄우면 사람이 지나가기만 해도 리더가
+        // 깜빡이고 소리가 난다 — 화면도 소리도 로그도 없이 넘긴다.
+        //
+        // 이미 등록해 둔 카드는 길이와 상관없이 받는다. 4바이트 카드를 지급/사용
+        // 카드로 쓰기로 했다면 그것까지 막을 이유는 없다.
+        if (uidLen != 7 && cardIndexOf(dbg) < 0) {
+          // 아무것도 하지 않는다. 로그도 남기지 않는다 — 루프마다 지나는 자리라
+          // 한 줄만 찍어도 초당 열 몇 줄이 쌓인다.
+        } else
+
+        // ── 올려둔 카드는 한 번만 처리한다 ──
+        //
+        // 카드를 올려 두면 이 자리를 80ms 마다 지난다. 예전에는 쿨다운을 아래쪽
+        // handleTag/rejectTag **안에서만** 봤다. 그래서 화면은 한 번만 바뀌는데
+        // 그 위의 로그·CC 읽기·SAMConfig 는 초당 열 몇 번씩 계속 돌았다 —
+        // 같은 줄이 로그에 수십 줄씩 쌓이던 것이 이것이다.
+        //
+        // 여기서 먼저 끊으면 NFC 교환 자체를 아끼고 로그도 한 번만 남는다.
+        // (간격은 '같은 키링 재인식 간격' = tagCooldownMs. 터치 쪽 설정이 아니다)
+        if (!strcmp(dbg, lastUid) && millis() - lastTagMs < cfg.tagCooldownMs) {
+          // 아직 같은 카드다. 아무것도 하지 않는다.
+        } else {
         // ── 키링만 받는다 ──
         //
         // 리더는 전파를 계속 내보내므로 5cm 안에 들어온 것은 무엇이든 응답한다.
@@ -2665,21 +2827,61 @@ void loop() {
         // **읽은 직후에 물어야 한다.** 카드가 아직 선택된 상태라야 InDataExchange 가
         // 통한다. handleTag 안쪽처럼 뒤로 미루면 정품 키링도 실패로 나온다.
         uint8_t cc[4] = {0};
-        if (nfc.ntag2xx_ReadPage(3, cc) && cc[0] == 0xE1) {
-          Serial.printf("[태그] %s (%u바이트) CC=%02X %02X %02X %02X\n",
-                        dbg, uidLen, cc[0], cc[1], cc[2], cc[3]);
+        bool ndef = nfc.ntag2xx_ReadPage(3, cc) && cc[0] == 0xE1;
+
+        // 첫 읽기는 드물게 빗나간다 — 카드가 자리를 잡기 전에 잡히면 응답이 오지
+        // 않고 CC 가 0 으로 남는다. 그때 바로 내치면 "아닙니다" 가 떴다가 다시
+        // 대면 되는, 두 번 대야 하는 증상이 된다. 한 번만 다시 물어본다.
+        if (!ndef && !cc[0] && !cc[1] && !cc[2] && !cc[3]) {
+          nfc.SAMConfig();                         // 실패한 교환이 남긴 상태를 되돌린다
+          uint8_t u2[255] = {0};
+          uint8_t l2 = 0;
+          if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, u2, &l2, 120)
+              && l2 == uidLen && !memcmp(u2, uid, uidLen)) {   // 같은 카드일 때만
+            memset(cc, 0, sizeof(cc));
+            ndef = nfc.ntag2xx_ReadPage(3, cc) && cc[0] == 0xE1;
+            if (ndef) Serial.println("[태그] 첫 읽기 실패 — 다시 물어 읽었습니다");
+          }
+        }
+
+        // 지급/사용 카드는 NDEF 가 아니다(4바이트 UID 의 MIFARE 계열). 등록된
+        // 카드라면 CC 와 상관없이 들여보낸다 — 이 문이 키링만 통과시키는 바람에
+        // 카드 단계에서 카드를 대도 handleTag 까지 가지 못했다.
+        const bool knownCard = cardIndexOf(dbg) >= 0;
+
+        if (ndef || knownCard) {
+          Serial.printf("[태그] %s (%u바이트) CC=%02X %02X %02X %02X%s\n",
+                        dbg, uidLen, cc[0], cc[1], cc[2], cc[3],
+                        ndef ? "" : " · 등록된 카드");
+          // 모바일 조회 링크를 아직 안 썼으면 **여기서** 쓴다.
+          //
+          // 카드가 선택돼 있는 것이 확실한 유일한 자리다. handleTag 안쪽은 서버에
+          // 묻느라 수백 ms 가 걸리고, 그동안 아이는 키링을 치우고 카드를 집는다.
+          // 지급이든 사용이든 출석이든 내역이든 모든 길이 여기를 지나므로,
+          // 모드와 상관없이 한 번만 써 두면 된다.
+          //
+          // 용량은 CC 세 번째 바이트 × 8 이다(NTAG213 은 0x12 → 144바이트).
+          // 링크는 NDEF 키링에만 쓴다 — 지급/사용 카드에는 쓸 자리도, 쓸 이유도 없다.
+          if (ndef) passEnsureWritten(dbg, (uint16_t)cc[2] * 8);
           handleTag(uid, uidLen);
-        } else {
-          Serial.printf("[태그] %s — 키링이 아니라 넘깁니다 (CC %02X %02X %02X %02X)\n",
+        } else if (cc[0] || cc[1] || cc[2] || cc[3]) {
+          // 응답은 왔는데 NDEF 가 아니다 = 다른 종류의 카드다(MIFARE Classic 등).
+          // 지급/사용 카드로 쓰려고 댄 것일 수 있으니 등록할 수 있게 알린다.
+          Serial.printf("[태그] %s — 처음 보는 카드 (CC %02X %02X %02X %02X)\n",
                         dbg, cc[0], cc[1], cc[2], cc[3]);
+          nfc.SAMConfig();
+          unknownCard(dbg);
+        } else {
+          // 아무 응답도 없다 — 휴대폰·교통카드처럼 우리와 상관없는 것.
+          Serial.printf("[태그] %s — 응답 없음, 넘깁니다\n", dbg);
           // 실패한 교환은 대상 선택 상태를 망가뜨려 **다음 읽기까지 전부 실패**한다.
-          // (카드 한 번 댔더니 그 뒤로 키링이 안 먹던 증상이 이것이었다)
           nfc.SAMConfig();
           rejectTag(dbg);
         }
-      } else {
-        Serial.printf("[태그] 길이 %u — 버립니다(응답 프레임이 깨졌습니다)\n", uidLen);
+        }  // 쿨다운 else
       }
+      // 길이가 4·7·10 이 아니면 응답 프레임이 깨진 것이다. 조용히 넘긴다 —
+      // 깨진 프레임은 연달아 들어와 로그만 채운다.
     }
   }
 
