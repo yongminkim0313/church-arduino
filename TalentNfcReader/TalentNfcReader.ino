@@ -4,28 +4,38 @@
 // 입력은 디스플레이에 붙은 XPT2046 터치 패널 하나뿐이다 — 화면 위쪽의
 // 지급·사용·내역 세 탭을 손으로 눌러 고른다.
 //
-// 지급·사용 탭은 화면 오른쪽에 '메뉴'(항목별 포인트)를 띄운다 — 지급은 출석 5,
-// 새친구 20 처럼, 사용는 컵라면 5, 젤리 10 처럼. 눌러서 고른 항목의 포인트로 처리한다.
-// 메뉴는 서버 설정(earnMenu/spendMenu)에서 오고, 비워 두면 talentStep 하나로 동작한다.
+// 지급이냐 사용이냐는 **카드가 정한다**. 화면에서 고르지 않는다 —
+// 지급 카드를 대면 지급, 사용 카드를 대면 사용이다.
 //
-// 화면 테두리가 지금 태깅하면 무슨 일이 일어나는지 말해 준다:
-//   초록 = 지급 · 빨강 = 사용 · 회색 = 내역 탭(태깅해도 처리하지 않는다)
-// 부호(+/-)는 쓰지 않는다. 멀리서 보면 획 하나는 안 보이지만 테두리 색은 보인다.
+// 예전에는 위쪽에 지급·사용 탭이 있었다. 그런데 대는 카드에 이미 방향이 적혀 있어,
+// 탭은 "카드와 맞는 쪽을 미리 골라 두는" 일만 했다. 어긋나면 "사용 카드입니다" 로
+// 되돌려 보냈는데, 아이 입장에서는 맞는 카드를 댔는데 안 되는 화면이었다.
+// 탭을 걷어내니 고를 것이 없어지고, 화면은 78px 을 되찾았다.
+//
+// 부호(+/-)는 쓰지 않는다. 처리를 마치면 테두리와 숫자 색이 방향을 말한다
+// (초록 = 지급, 빨강 = 사용). 고르기 전에는 방향이 없으므로 테두리도 회색이다.
 //
 // 포인트 잔액은 youthvision.co.kr 의 yvServer(/api/talent)가 관리한다.
 // (같은 API 가 jesusdream.kr 에도 있다. 접속 주소는 ChurchSecrets.h 의 TALENT_API_BASE 하나로 바꾼다)
 // 리더는 저장하지 않고 매번 서버에 묻는다 — 리더가 여러 대여도 잔액이 하나로 유지된다.
 //
 // ── 조작 ──────────────────────────────────────────────────────────
-//   화면 위쪽 탭 터치 : 지급 / 사용 / 내역 전환
-//   오른쪽 메뉴 터치  : 지급·사용할 항목을 고른다 (고른 것만 색이 채워진다)
-//   키링 태깅         : 고른 항목대로 처리하고 이름과 함께 결과를 표시
+//   헤더 띠 터치      : 전체 내역 보기 ↔ 대기 화면
+//   키링 태깅         : 이름·잔액과 쓸 수 있는 카드 목록을 띄우고 카드를 기다린다
+//   카드 태깅         : 그 카드대로 지급/사용하고 결과를 표시
 //                       (예: "김용민 / 아이스크림 15 포인트 사용 / 남은 포인트 11")
-//   내역 탭에서 태깅  : 잔액을 건드리지 않고 그 사람의 남은 포인트와 최근 4건을 보여준다
-//   내역 탭 위·아래 띠: 위 = 이전 페이지(더 최근), 아래 = 다음 페이지(더 예전)
+//   내역에서 태깅     : 잔액을 건드리지 않고 그 사람의 남은 포인트와 최근 4건을 보여준다
+//   내역 위·아래 띠   : 위 = 이전 페이지(더 최근), 아래 = 다음 페이지(더 예전)
 //   무입력            : sleepEnabled 가 켜진 기기만 딥슬립한다. 기본은 꺼짐 —
 //                       상시 전원으로 세워 두는 기기가 대부분이고, 화면이 꺼지면
 //                       고장으로 오해받는다.
+//   끊김일 때 헤더 터치: 블루투스 와이파이 설정 화면 (아래 참고)
+//
+// ── 와이파이가 안 될 때 ───────────────────────────────────────────
+// 공유기를 바꾸거나 비밀번호가 달라지면 기기가 먹통이 된다. 예전에는 그때마다
+// ChurchSecrets.h 를 고쳐 다시 구워야 했다 — 현장에 노트북과 케이블을 들고 가야 한다.
+// 이제는 못 붙으면 스스로 블루투스를 열고, 휴대폰에서 이름과 비밀번호를 넣어 준다.
+// 받은 것은 NVS 에 저장해 다음 부팅부터 먼저 쓴다(자세한 것은 '블루투스 설정' 절).
 //
 // ── 빌드 (TFT_eSPI 설정을 이 스케치에만 적용) ──────────────────────
 // TFT_eSPI 는 라이브러리 전역 설정(User_Setup_Select.h)을 쓰기 때문에, 그대로 두면
@@ -35,7 +45,7 @@
 //   ./TalentNfcReader/build.sh              # 컴파일
 //   ./TalentNfcReader/build.sh --upload     # 컴파일 + 업로드
 //
-// 필요 라이브러리: TFT_eSPI, Adafruit PN532 (+ Adafruit BusIO)
+// 필요 라이브러리: TFT_eSPI, Adafruit PN532 (+ Adafruit BusIO), NimBLE-Arduino 2.x
 // 터치는 TFT_eSPI 가 XPT2046 을 직접 다룬다 — 별도 라이브러리가 필요 없고
 // build.sh 의 -DTOUCH_CS=15 하나로 켜진다. SPI 는 화면과 같은 버스를 쓴다.
 
@@ -50,6 +60,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <NimBLEDevice.h>    // 와이파이가 안 될 때 블루투스로 설정을 받는다
 #include <ChurchSecrets.h>   // WiFi/서버 인증정보 (저장소 밖)
 #include <Preferences.h>     // 설정 캐시(NVS)
 #include <esp_sleep.h>
@@ -133,7 +144,6 @@ static const uint16_t TOUCH_CAL[5] = { 444, 3198, 407, 3328, 4 };
 // 딥슬립에서 깨어날 때마다 setup() 이 통째로 도는 기기라, 서버 응답을 기다렸다가
 // 화면을 그리면 터치 후 반응이 눈에 띄게 늦어진다. 그래서 캐시로 먼저 그리고
 // 설정 갱신은 그 뒤에 한다. 서버에 못 붙으면 캐시(없으면 기본값)로 계속 간다.
-enum ModeLock : uint8_t { LOCK_BOTH = 0, LOCK_EARN = 1, LOCK_SPEND = 2 };
 
 // ── 메뉴 ──────────────────────────────────────────────────────────
 // 항목별 포인트. 서버가 이름을 5자, 금액을 999 까지로 조여서 준다 —
@@ -157,9 +167,7 @@ struct Menu {
 struct Config {
   Menu     earnMenu;                                // 지급 탭 오른쪽 목록
   Menu     spendMenu;                               // 사용 탭 오른쪽 목록
-  int32_t  talentStep      = DEF_TALENT_STEP;       // 메뉴가 빈 탭에서만 쓴다
-  bool     defaultEarn     = true;                  // defaultMode
-  uint8_t  modeLock        = LOCK_BOTH;
+  int32_t  talentStep      = DEF_TALENT_STEP;       // 카드가 없던 시절의 기본 증감폭
   bool     sleepEnabled    = DEF_SLEEP_ENABLED;
   uint32_t sleepTimeoutMs  = DEF_SLEEP_TIMEOUT_MS;
   uint32_t tagCooldownMs   = DEF_TAG_COOLDOWN_MS;
@@ -179,6 +187,9 @@ struct Config {
 static Config     cfg;
 static Preferences prefs;
 static uint32_t   lastCfgFetch = 0;
+// 직전에 붙어 있었는지. 끊김↔붙음이 바뀌는 순간에만 헤더를 갈아 끼우고,
+// 다시 붙었으면 서버에서 받아 올 것들을 한 번 받는다(매 루프 확인하면 화면이 깜빡인다).
+static bool       wifiWasOnline = false;
 static bool       cfgFromServer = false;
 
 TFT_eSPI tft = TFT_eSPI();
@@ -212,19 +223,19 @@ Adafruit_PN532 nfc(-1, -1, &Wire);
 // 예전에는 키링 한 번으로 곧바로 처리했다. 그러면 "누구에게 무엇을" 을 확인할
 // 틈이 없어, 잘못 댄 것을 되돌리려면 관리자가 화면에서 손봐야 했다.
 //
-//   대기 ── 키링 ──▶ 사람(이름·잔액·최근내역) ── 확인 ──▶ 카드 대기 ── 카드 ──▶ 완료(그림)
-//                                                                            │
-//                                                            doneMs 뒤 대기 ◀┘
+//   대기 ── 키링 ──▶ 카드 대기(이름·잔액·카드 목록) ── 카드 ──▶ 완료(그림)
+//                     │                                              │
+//                    취소 ──▶ 대기 ◀── doneMs 뒤 ────────────────────┘
 //
-// 카드를 대면 곧바로 처리한다. 한 번 더 확인을 받지 않는 이유: 확인할 것(누구에게)은
-// 이미 앞 단계에서 보고 눌렀고, 무엇을 얼마나는 카드에 적혀 있어 고를 여지가 없다.
-// 줄을 세워 놓고 쓰는 기기라 누르는 횟수가 하나 줄면 체감이 크다.
+// 확인 단추는 없앴다. 누를 것이 하나 줄면 줄이 그만큼 빨리 빠지고, 확인할 것(누구에게)은
+// 이름과 잔액이 카드 대기 화면에 떠 있어 카드를 대기 전에 눈으로 이미 본다.
+// 잘못 댄 키링은 '취소' 로 물린다 — 되돌릴 자리는 그대로 남겨 둔 셈이다.
+// 카드를 대면 곧바로 처리한다. 무엇을 얼마나는 카드에 적혀 있어 고를 여지가 없다.
 //
-// 출석모드면 '사람' 에서 확인을 누르는 순간 카드 단계도 건너뛴다(설정으로 정한 카드).
+// 출석모드면 키링을 대는 순간 카드 단계까지 건너뛴다(설정으로 정한 카드).
 enum Step : uint8_t {
   STEP_IDLE,      // 키링을 기다린다
-  STEP_PERSON,    // 누구인지 보여주고 확인을 기다린다
-  STEP_CARD,      // 지급/사용 카드를 기다린다
+  STEP_CARD,      // 누구인지 보여주며 지급/사용 카드를 기다린다
   STEP_DONE,      // 완료 그림
 };
 
@@ -239,14 +250,9 @@ static int32_t  doneDelta    = 0;    // 완료 화면에 띄울 값
 static int32_t  doneBalance  = 0;
 
 // ── 상태 ──────────────────────────────────────────────────────────
-// 탭이 곧 모드다(enum Tab 은 TalentTypes.h — 자동 프로토타입보다 먼저 보여야 한다).
-static Tab      tab          = TAB_EARN;
-// 내역에 들어가기 전에 보던 탭. 헤더를 다시 누르면 여기로 돌아온다.
-static Tab      prevTab      = TAB_EARN;
-// 고른 항목은 탭마다 따로 기억한다 — 지급에서 '전도' 를 골라 뒀는데 사용 탭에
-// 다녀오면 풀리는 것은 현장에서 짜증나는 동작이다.
-static uint8_t  selEarn      = 0;
-static uint8_t  selSpend     = 0;
+// 화면은 둘뿐이다 — 평소(대기·카드·완료)와 내역 보기.
+// (enum Tab 은 TalentTypes.h — 자동 프로토타입보다 먼저 보여야 한다)
+static Tab      tab          = TAB_MAIN;
 static uint32_t lastActivity = 0;
 static uint32_t lastTouchMs  = 0;
 static uint32_t lastTagMs    = 0;
@@ -282,12 +288,6 @@ static bool    splashHas = false;
 // 화면이 비어 무슨 일인지 알 수 없다. 232x42 를 꽉 채운 그림이다.
 static ArtFile headOnFile, headOffFile;
 static bool    headHasFile = false;
-
-// 탭 버튼 그림. 관리자가 올렸으면 구워 넣은 것 대신 이쪽을 쓴다(0=지급, 1=사용).
-// 한 쪽은 고른 상태와 아닌 상태가 둘 다 있어야 쓴다 — 하나만 있으면 크기가 어긋나
-// 두 칸의 배치가 깨진다. 서버가 그 규칙으로 걸러 보낸다.
-static ArtFile tabOnFile[2], tabOffFile[2];
-static bool    tabHasFile[2] = { false, false };
 
 // 처리를 마쳤을 때 띄우는 그림. 지급·사용 한 장씩(0=지급, 1=사용).
 // 글자를 거의 안 쓰고 그림으로 말하는 자리라 포인트 그림보다 크게 받는다.
@@ -366,52 +366,11 @@ static void cfgClamp() {
   cfg.backlight       = clampT<uint8_t>(cfg.backlight,           10,    255);
   cfg.ttlSec          = clampT<uint32_t>(cfg.ttlSec,             30,  86400);
   cfg.doneMs          = clampT<uint32_t>(cfg.doneMs,           1000,  15000);
-  if (cfg.modeLock > LOCK_SPEND) cfg.modeLock = LOCK_BOTH;
   if (!cfg.label[0]) strlcpy(cfg.label, DEF_LABEL, sizeof(cfg.label));
   // "#RRGGBB" 가 아니면 기본색으로 돌린다. 잘못된 값이 오면 화면이 검게 칠해져
   // 고장으로 보이는데, 현장에서 그 원인을 짚기 어렵다.
   if (strlen(cfg.bgColor) != 7 || cfg.bgColor[0] != '#')
     strlcpy(cfg.bgColor, DEF_BG_COLOR, sizeof(cfg.bgColor));
-}
-
-// 지금 탭의 메뉴와 고른 자리. 내역 탭에서는 메뉴를 쓰지 않는다.
-static Menu&    curMenu() { return (tab == TAB_SPEND) ? cfg.spendMenu : cfg.earnMenu; }
-static uint8_t& curSel()  { return (tab == TAB_SPEND) ? selSpend : selEarn; }
-static bool     hasMenu() { return tab != TAB_HISTORY && curMenu().count > 0; }
-
-// 태깅했을 때 오르내릴 양. 메뉴가 비어 있으면 예전처럼 talentStep 하나를 쓴다.
-static int32_t curAmount() {
-  Menu& m = curMenu();
-  if (!m.count) return cfg.talentStep;
-  return m.item[curSel() < m.count ? curSel() : 0].amount;
-}
-// 내역에 남길 항목 이름. 메뉴를 안 쓰는 기기는 빈 문자열이다.
-static const char* curItemName() {
-  Menu& m = curMenu();
-  if (!m.count) return "";
-  return m.item[curSel() < m.count ? curSel() : 0].name;
-}
-
-// 메뉴가 줄어 고른 자리가 사라졌으면 첫 항목으로 되돌린다.
-static void clampSel() {
-  if (selEarn  >= cfg.earnMenu.count)  selEarn  = 0;
-  if (selSpend >= cfg.spendMenu.count) selSpend = 0;
-}
-
-// 잠긴 기기에서 숨겨진 탭에 머물러 있지 않게 한다.
-static bool tabAllowed(Tab t) {
-  if (t == TAB_HISTORY) return true;
-  if (cfg.modeLock == LOCK_EARN)  return t == TAB_EARN;
-  if (cfg.modeLock == LOCK_SPEND) return t == TAB_SPEND;
-  return true;
-}
-
-// 잠금이 걸려 있으면 그 탭으로, 아니면 기본 모드의 탭으로 맞춘다.
-// 내역 탭에 머물러 있었다면 그대로 둔다 — 잠금과 상관없이 볼 수 있다.
-static void cfgApplyMode() {
-  if      (cfg.modeLock == LOCK_EARN)  tab = TAB_EARN;
-  else if (cfg.modeLock == LOCK_SPEND) tab = TAB_SPEND;
-  else if (tab != TAB_HISTORY)         tab = cfg.defaultEarn ? TAB_EARN : TAB_SPEND;
 }
 
 // ── NVS 캐시 ──
@@ -428,8 +387,6 @@ static void menuSave(const char* key, const Menu& m) { prefs.putBytes(key, &m, s
 static void cfgLoadCache() {
   if (!prefs.begin("talentcfg", true)) return;      // 아직 저장된 적 없음 → 기본값
   cfg.talentStep      = prefs.getInt ("step",   cfg.talentStep);
-  cfg.defaultEarn     = prefs.getBool("dmode",  cfg.defaultEarn);
-  cfg.modeLock        = prefs.getUChar("lock",  cfg.modeLock);
   cfg.sleepEnabled    = prefs.getBool("sleepOn", cfg.sleepEnabled);
   cfg.sleepTimeoutMs  = prefs.getUInt("sleepMs", cfg.sleepTimeoutMs);
   cfg.tagCooldownMs   = prefs.getUInt("coolMs",  cfg.tagCooldownMs);
@@ -452,14 +409,72 @@ static void cfgLoadCache() {
   menuLoad("mSpend", cfg.spendMenu);
   prefs.end();
   cfgClamp();
-  clampSel();
+}
+
+// ── 와이파이 인증정보 ──
+// 세 군데서 온다. 먼저 NVS 에 저장된 것(블루투스로 받아 둔 것), 없으면
+// ChurchSecrets.h 에 구워 넣은 것. 둘 다 안 되면 블루투스 설정 모드로 간다.
+//
+// 구워 넣은 값을 지우지 않는 이유: 교회 공유기가 그대로인 기기는 손댈 일이 없어야 하고,
+// NVS 를 지워도 늘 돌아갈 자리가 하나는 남아야 한다.
+static char wifiSsid[33] = "";      // 저장된 것. 비어 있으면 구워 넣은 것을 쓴다
+static char wifiPass[64] = "";
+
+static void wifiLoadSaved() {
+  if (!prefs.begin("talentwifi", true)) return;     // 저장된 적 없음
+  prefs.getString("ssid", wifiSsid, sizeof(wifiSsid));
+  prefs.getString("pass", wifiPass, sizeof(wifiPass));
+  prefs.end();
+  if (wifiSsid[0]) Serial.printf("[와이파이] 저장된 설정 %s\n", wifiSsid);
+}
+
+static void wifiSaveCreds(const char* ssid, const char* pass) {
+  if (!prefs.begin("talentwifi", false)) { Serial.println("[와이파이] NVS 열기 실패"); return; }
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  prefs.end();
+  strlcpy(wifiSsid, ssid, sizeof(wifiSsid));
+  strlcpy(wifiPass, pass, sizeof(wifiPass));
+  Serial.printf("[와이파이] 저장했습니다 — %s\n", ssid);
+}
+
+static void wifiForgetCreds() {
+  if (prefs.begin("talentwifi", false)) { prefs.clear(); prefs.end(); }
+  wifiSsid[0] = wifiPass[0] = '\0';
+  Serial.println("[와이파이] 저장해 둔 설정을 지웠습니다");
+}
+
+// 한 번 붙어 본다. 실패해도 라디오는 켜 둔 채로 둔다 — 곧 다른 값으로 다시 시도한다.
+static bool wifiTry(const char* ssid, const char* pass, uint32_t waitMs) {
+  if (!ssid || !ssid[0]) return false;
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  WiFi.begin(ssid, pass);
+  const uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < waitMs) delay(200);
+  return WiFi.status() == WL_CONNECTED;
+}
+
+// 알고 있는 것으로: 저장된 것 → 구워 넣은 것.
+//
+// FORCE_WIFI_SETUP 으로 구우면 둘 다 건너뛰고 곧장 실패한다 — 블루투스 설정 화면을
+// 손으로 확인하려고 둔 시험용 문이다(NO_WIFI=1 ./build.sh). 공유기를 꺼 보지 않고도
+// "못 붙는 기기" 를 만들 수 있다. 평소 빌드에는 들어가지 않는다.
+static bool wifiConnectKnown(uint32_t waitMs) {
+#ifdef FORCE_WIFI_SETUP
+  (void)waitMs;
+  Serial.println("[와이파이] FORCE_WIFI_SETUP — 알고 있는 인증정보를 모두 건너뜁니다(시험용 빌드)");
+  return false;
+#else
+  if (wifiSsid[0] && wifiTry(wifiSsid, wifiPass, waitMs)) return true;
+  if (strcmp(wifiSsid, WIFI_SSID) != 0 && wifiTry(WIFI_SSID, WIFI_PASSWORD, waitMs)) return true;
+  return false;
+#endif
 }
 
 static void cfgSaveCache() {
   if (!prefs.begin("talentcfg", false)) { Serial.println("[설정] NVS 열기 실패"); return; }
   prefs.putInt  ("step",    cfg.talentStep);
-  prefs.putBool ("dmode",   cfg.defaultEarn);
-  prefs.putUChar("lock",    cfg.modeLock);
   prefs.putBool ("sleepOn", cfg.sleepEnabled);
   prefs.putUInt ("sleepMs", cfg.sleepTimeoutMs);
   prefs.putUInt ("coolMs",  cfg.tagCooldownMs);
@@ -556,14 +571,8 @@ static bool cfgFetch() {
   const char* ac = c["attendanceCard"] | "";
   strlcpy(cfg.attendanceCard, ac, sizeof(cfg.attendanceCard));
 
-  const char* dm = c["defaultMode"] | "";
-  if      (!strcmp(dm, "earn"))  cfg.defaultEarn = true;
-  else if (!strcmp(dm, "spend")) cfg.defaultEarn = false;
-
-  const char* ml = c["modeLock"] | "";
-  if      (!strcmp(ml, "both"))  cfg.modeLock = LOCK_BOTH;
-  else if (!strcmp(ml, "earn"))  cfg.modeLock = LOCK_EARN;
-  else if (!strcmp(ml, "spend")) cfg.modeLock = LOCK_SPEND;
+  // defaultMode·modeLock 은 더 읽지 않는다 — 방향을 카드가 정하므로
+  // 기본 모드도 모드 잠금도 가리킬 것이 없다(관리자 화면의 값은 무시된다).
 
   const char* lb = c["deviceLabel"] | "";
   if (lb[0]) strlcpy(cfg.label, lb, sizeof(cfg.label));
@@ -575,7 +584,6 @@ static bool cfgFetch() {
   // 옛 서버에 붙었다고 메뉴가 사라지면 현장에서 기기가 못 쓰게 된다.
   readMenu(c, "earnMenu",  cfg.earnMenu);
   readMenu(c, "spendMenu", cfg.spendMenu);
-  clampSel();
 
   // 모바일 조회 링크 표. 키가 없으면(옛 서버) 건드리지 않는다 —
   // 표가 사라지면 이미 확인해 둔 카드까지 다시 읽게 된다.
@@ -628,6 +636,9 @@ static bool cfgFetch() {
       bgFile[idx].h = h;
       bgHas[idx] = true;
     }
+    // 대기 화면이 하나뿐이라 배경도 한 장만 쓴다. 관리자 화면의 '지급 배경' 을
+    // 그 한 장으로 삼는다 — 둘을 다 받아 두어도 갈아 끼울 자리가 없다.
+    bgHas[1] = false;
   }
 
   // 켤 때 뜨는 화면
@@ -667,29 +678,6 @@ static bool cfgFetch() {
     }
   } else if (doc["header"].isNull() && doc["config"].is<JsonObject>()) {
     headHasFile = false;                 // 서버가 지웠다
-  }
-
-  // 탭 버튼 그림. 키가 없으면 건드리지 않는다(옛 서버에 붙어도 있던 것을 그대로 쓴다).
-  if (doc["tabs"].is<JsonArray>()) {
-    tabHasFile[0] = tabHasFile[1] = false;
-    for (JsonObject t : doc["tabs"].as<JsonArray>()) {
-      const char* side = t["side"] | "";
-      const int idx = !strcmp(side, "earn") ? 0 : (!strcmp(side, "spend") ? 1 : -1);
-      if (idx < 0) continue;
-      const char* on  = t["file"]    | "";
-      const char* off = t["offFile"] | "";
-      const int16_t w = t["w"] | 0, hgt = t["h"] | 0;
-      if (!on[0] || !off[0] || w < 1 || hgt < 1) continue;
-      if (strlen(on) >= sizeof(tabOnFile[0].file) || strlen(off) >= sizeof(tabOffFile[0].file)) continue;
-      tabOnFile[idx].base = idx;
-      strlcpy(tabOnFile[idx].file, on, sizeof(tabOnFile[0].file));
-      tabOnFile[idx].w = w; tabOnFile[idx].h = hgt;
-      tabOffFile[idx].base = idx;
-      strlcpy(tabOffFile[idx].file, off, sizeof(tabOffFile[0].file));
-      tabOffFile[idx].w = t["offW"] | w;
-      tabOffFile[idx].h = t["offH"] | hgt;
-      tabHasFile[idx] = true;
-    }
   }
 
   // 완료 그림. 처리를 마쳤을 때 띄운다(0=지급, 1=사용).
@@ -733,11 +721,10 @@ static bool cfgFetch() {
   lastCfgFetch  = millis();
   cfgFromServer = true;
 
-  Serial.printf("[설정] 서버 반영: 메뉴 지급%u/사용%u step=%ld 슬립=%s(%lums) 잠금=%u 밝기=%u 제목=%s\n",
-                cfg.earnMenu.count, cfg.spendMenu.count,
+  Serial.printf("[설정] 서버 반영: step=%ld 슬립=%s(%lums) 밝기=%u 제목=%s\n",
                 (long)cfg.talentStep, cfg.sleepEnabled ? "켬" : "끔",
                 (unsigned long)cfg.sleepTimeoutMs,
-                cfg.modeLock, cfg.backlight, cfg.label);
+                cfg.backlight, cfg.label);
   return true;
 }
 
@@ -926,9 +913,6 @@ static bool artWanted(const char* name) {
     if (bgHas[i] && !strcmp(name, bgFile[i].file)) return true;
   for (uint8_t i = 0; i < 2; i++)
     if (doneHas[i] && !strcmp(name, doneFile[i].file)) return true;
-  for (uint8_t i = 0; i < 2; i++)
-    if (tabHasFile[i] && (!strcmp(name, tabOnFile[i].file) || !strcmp(name, tabOffFile[i].file)))
-      return true;
   if (headHasFile && (!strcmp(name, headOnFile.file) || !strcmp(name, headOffFile.file)))
     return true;
   if (splashHas && !strcmp(name, splashFile.file)) return true;
@@ -972,21 +956,6 @@ static void artSync() {
     if (h1) got++;
     if (h2) got++;
     if (!h1 || !h2) headHasFile = false;
-  }
-
-  // 탭 버튼 그림. 두 장 중 하나라도 못 받으면 그 쪽은 구워 넣은 그림으로 되돌린다 —
-  // 한 장만 받아 쓰면 고를 때마다 크기가 달라져 배치가 흔들린다.
-  for (uint8_t i = 0; i < 2; i++) {
-    if (!tabHasFile[i]) continue;
-    want += 2;
-    char p1[64], p2[64];
-    snprintf(p1, sizeof(p1), "%s/%s", ART_DIR, tabOnFile[i].file);
-    snprintf(p2, sizeof(p2), "%s/%s", ART_DIR, tabOffFile[i].file);
-    const bool a1 = LittleFS.exists(p1) || artDownload(tabOnFile[i]);
-    const bool a2 = LittleFS.exists(p2) || artDownload(tabOffFile[i]);
-    if (a1) got++;
-    if (a2) got++;
-    if (!a1 || !a2) tabHasFile[i] = false;
   }
 
   // 완료 그림
@@ -1190,11 +1159,6 @@ static void passEnsureWritten(const char* uid, uint16_t capBytes) {
   }
 }
 
-// 지금 이 기기가 받을 수 있는 카드인지. 지급 리더에 간식 카드를 대는 사고를 막는다.
-static bool cardFitsTab(const CardEntry& c) {
-  return c.spend ? (tab == TAB_SPEND) : (tab == TAB_EARN);
-}
-
 // POST /api/talent/seen — 처음 보는 카드를 서버에 알린다.
 // 예전에는 모르는 UID 에 곧바로 잔액을 만들었다. 그러면 휴대폰이 스쳐도 "이름 없는
 // 사람" 이 생겼다. 이제는 알리기만 하고, 관리자가 화면에서 무엇인지 정해 준다.
@@ -1324,24 +1288,15 @@ static void backlight(bool on) {
 }
 
 // ── 치수 ──────────────────────────────────────────────────────────
-// 테두리 · 헤더 · 탭 · 내용 네 층으로 나눈다. rotation 에 따라 폭이 바뀌므로
+// 테두리 · 헤더 · 내용 세 층으로 나눈다. rotation 에 따라 폭이 바뀌므로
 // 가로 좌표는 tft.width() 에서 매번 계산한다.
+//
+// 예전에는 헤더 아래에 78px 짜리 탭 줄(지급·사용 그림 버튼)이 한 층 더 있었다.
+// 방향을 카드가 정하게 되면서 고를 것이 없어져 걷어냈고, 그 78px 은 내용이 가져갔다 —
+// 카드 목록이 세 줄 더 들어가고, 배경 그림도 그만큼 커졌다.
 #define BORDER   4
 #define HEAD_H  42
-// 탭 줄 높이. 그림 버튼(72px) + 위아래 여백.
-// 예전에는 44px 알약만 잘라 썼는데, 손가락이 닿는 자리가 알약 모양뿐이라 가장자리를
-// 누르면 안 먹었다. 이제 그림에 바깥 배경까지 넣어 잘라서(tools/make-artwork.py)
-// 누를 수 있는 자리가 그림 사각형 전체가 된다 — tabHit 이 그림 사각형을 그대로 쓴다.
-#define TAB_H   78
-// 오른쪽 메뉴 칸. 14px 한글 5자(70px) + 안쪽 여백 12 + 세 자리 금액(24px) = 106 이라
-// 108 로 잡았다. 서버가 이름을 5자, 금액을 999 로 조이는 근거가 이 계산이다.
-// 남는 왼쪽 칸 120px 에는 "키링을 대주세요"(98px)와 48px 숫자 세 자리(81px)가 들어간다.
-#define MENU_W  108
-#define MENU_ROW 28
-static int tabTop()     { return BORDER + HEAD_H; }
-// 내역은 탭 줄 없이 전체를 쓴다 — 목록은 한 줄이라도 더 들어가는 편이 낫고,
-// 거기서는 지급·사용을 고를 일이 없어 버튼이 자리만 차지한다.
-static int contentTop() { return BORDER + HEAD_H + (tab == TAB_HISTORY ? 0 : TAB_H); }
+static int contentTop() { return BORDER + HEAD_H; }
 static int contentH()   { return tft.height() - contentTop() - BORDER; }
 static int contentMid() { return contentTop() + contentH() / 2; }
 
@@ -1349,9 +1304,8 @@ static int contentMid() { return contentTop() + contentH() / 2; }
 // tft.color565 는 init() 뒤에야 쓸 수 있어 setup() 에서 채운다.
 static uint16_t C_EARN, C_SPEND, C_NEUTRAL, C_HEADTXT, C_TABBG, C_ROWALT, C_WIFI, C_STRIP;
 // 흰 바탕에서 쓰는 벌. 밝은 초록·연회색은 흰 종이 위에서 흐려 보여 따로 둔다.
-static uint16_t C_EARN_D, C_SPEND_D, C_INK, C_INK2, C_INK3, C_LINE;
+static uint16_t C_EARN_D, C_SPEND_D, C_INK, C_LINE;
 // 내역 탭 페이지 띠에서 '지금은 눌러도 소용없다' 를 말하는 회색
-static uint16_t C_NAVOFF;
 
 static void initColors() {
   C_EARN    = tft.color565(  0, 200,  90);
@@ -1367,24 +1321,22 @@ static void initColors() {
   C_EARN_D  = tft.color565(  0, 150,  66);   // 흰 바탕용 초록 — 밝은 쪽은 눈에 안 잡힌다
   C_SPEND_D = tft.color565(200,  28,  28);
   C_INK     = tft.color565( 20,  22,  28);   // 본문 — 순검정보다 눈이 덜 아프다
-  C_INK2    = tft.color565( 74,  80,  90);   // 보조
-  C_INK3    = tft.color565(132, 138, 148);   // 희미하게
   C_LINE    = tft.color565(214, 218, 224);   // 가름선
-  C_NAVOFF  = tft.color565( 92,  96, 106);   // 눌러도 소용없는 페이지 띠
-}
-
-// 지금 태깅하면 무슨 일이 일어나는지를 한 가지 색으로 말한다.
-static uint16_t tabColor(Tab t) {
-  if (t == TAB_EARN)  return C_EARN;
-  if (t == TAB_SPEND) return C_SPEND;
-  return C_NEUTRAL;
 }
 
 // ── 테두리 ────────────────────────────────────────────────────────
 // 부호(+/-)를 쓰지 않는 대신 이 테두리가 방향을 알린다. 획 하나보다
 // 멀리서 잘 보이고, 화면 어디를 보고 있든 눈에 들어온다.
+//
+// 다만 방향은 카드를 댄 뒤에야 정해진다. 그전까지(대기·카드 기다림·내역)는
+// 회색이다 — 아직 아무 방향도 아닌데 초록이나 빨강을 띄우면 그 색이 거짓말이 된다.
+static uint16_t frameColor() {
+  if (step == STEP_DONE) return doneDelta > 0 ? C_EARN : C_SPEND;
+  return C_NEUTRAL;
+}
+
 static void drawFrame() {
-  const uint16_t c = tabColor(tab);
+  const uint16_t c = frameColor();
   const int w = tft.width(), h = tft.height();
   tft.fillRect(0, 0, w, BORDER, c);
   tft.fillRect(0, h - BORDER, w, BORDER, c);
@@ -1456,108 +1408,6 @@ static bool histHit(uint16_t tx, uint16_t ty) {
       && (int)ty >= BORDER && (int)ty < BORDER + HEAD_H;
 }
 
-// ── 탭 ────────────────────────────────────────────────────────────
-// 지급·사용 두 칸. 그림 버튼이라 글자를 따로 그리지 않는다(그림에 들어 있다).
-// 고른 쪽은 색이 있는 그림, 고르지 않은 쪽은 회색 그림 — 두 벌을 따로 굽는다.
-//
-// 내역은 여기 없다 — 헤더로 옮겼다(drawHeader). 셋을 나란히 두면 한 칸이
-// 78px 밖에 안 되어 그림이 뭉개진다.
-//
-// 잠긴 기기(지급 전용/사용 전용)는 한 칸만 가운데에 둔다.
-// (struct TabBtn 는 TalentTypes.h)
-// 한 칸을 채운다. 서버에서 받은 그림이 있으면 그것을, 없으면 구워 넣은 것을 쓴다.
-// 탭 버튼 그림은 펌웨어에 구워 넣지 않는다(약 45KB 를 아꼈다). 서버가 늘 내려준다 —
-// 관리자가 올린 것이 없으면 서버가 들고 있는 기본 그림을 대신 준다(talentArt 의
-// default-art). 그래서 여기서는 파일만 본다.
-//
-// 그래도 받기 전(첫 부팅, 또는 통신 실패)에는 그림이 없다. 그때는 색 칠한 칸에
-// 글자로 대신한다 — 빈 줄을 두면 고장으로 보인다.
-#define TAB_FALLBACK_W 105
-#define TAB_FALLBACK_H  72
-
-static void tabBtnFill(TabBtn& b, Tab key, uint8_t idx) {
-  b.key = key;
-  b.img = nullptr; b.off = nullptr;
-  b.file[0] = '\0'; b.fileOff[0] = '\0';
-  if (tabHasFile[idx]) {
-    strlcpy(b.file,    tabOnFile[idx].file,  sizeof(b.file));
-    strlcpy(b.fileOff, tabOffFile[idx].file, sizeof(b.fileOff));
-    b.w = tabOnFile[idx].w;
-    b.h = tabOnFile[idx].h;
-  } else {
-    b.w = TAB_FALLBACK_W; b.h = TAB_FALLBACK_H;
-  }
-}
-
-static uint8_t tabBtns(TabBtn* out) {
-  uint8_t n = 0;
-  if (tabAllowed(TAB_EARN))  tabBtnFill(out[n++], TAB_EARN,  0);
-  if (tabAllowed(TAB_SPEND)) tabBtnFill(out[n++], TAB_SPEND, 1);
-  return n;
-}
-
-// 버튼들을 가로 가운데에 나란히 놓는다. i 번째의 왼쪽 x.
-// 틈은 0 이다 — 두 그림이 원본 한 장을 반으로 가른 것이라, 붙여 놓아야 바깥 테두리가
-// 이어져 한 덩어리로 보인다. 띄우면 가운데가 갈라져 보인다.
-static int tabBtnX(const TabBtn* b, uint8_t n, uint8_t i) {
-  const int gap = 0;
-  int total = gap * (n - 1);
-  for (uint8_t k = 0; k < n; k++) total += b[k].w;
-  int x = (tft.width() - total) / 2;
-  for (uint8_t k = 0; k < i; k++) x += b[k].w + gap;
-  return x;
-}
-
-static void drawTabs() {
-  TabBtn b[2];
-  const uint8_t n = tabBtns(b);
-  // 탭 줄의 빈자리(버튼 둘레)는 내용 영역과 같은 바탕색으로 채운다 —
-  // 흰 띠로 두면 버튼 위아래에 흰 줄이 남아 화면이 세 토막으로 끊겨 보인다.
-  tft.fillRect(BORDER, tabTop(), tft.width() - BORDER * 2, TAB_H, tabBg(tab));
-
-  // 고르지 않은 쪽은 회색 그림을 따로 쓴다. 계산으로 어둡게 만드는 것보다
-  // 그림쟁이가 그린 것이 낫고, 줄 단위로 다시 칠하지 않아 그리기도 빠르다.
-  for (uint8_t i = 0; i < n; i++) {
-    const int x = tabBtnX(b, n, i);
-    const int y = tabTop() + (TAB_H - b[i].h) / 2;
-    const bool on = (b[i].key == tab);
-
-    if (b[i].file[0]) {                  // 서버에서 받은 그림
-      ArtFile a;
-      a.base = 0;
-      strlcpy(a.file, on ? b[i].file : b[i].fileOff, sizeof(a.file));
-      a.w = b[i].w; a.h = b[i].h;
-      if (drawArtFile(a, x, y, true)) continue;   // 둥근 모서리 바깥은 비침
-      // 파일을 읽다 실패하면 아래 글자 칸으로 내려간다
-    }
-
-    // 아직 그림을 못 받았을 때. 고른 쪽만 방향색으로 채우고 나머지는 눌러 둔다.
-    const uint16_t fill = on ? inkDir(b[i].key == TAB_EARN) : bgShade(12);
-    tft.fillRoundRect(x, y, b[i].w, b[i].h, 12, fill);
-    useFont(20);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(on ? TFT_WHITE : (lightBg() ? C_INK2 : TFT_LIGHTGREY), fill);
-    tft.drawString(b[i].key == TAB_EARN ? "지급" : "사용",
-                   x + b[i].w / 2, y + b[i].h / 2);
-    useFont(0);
-  }
-}
-
-// 터치 좌표가 어느 탭 버튼인지. 버튼이 아니면 false.
-static bool tabHit(uint16_t tx, uint16_t ty, Tab* out) {
-  if (tab == TAB_HISTORY) return false;              // 내역에는 탭 버튼이 없다
-  if (ty < (uint16_t)tabTop() || ty >= (uint16_t)(tabTop() + TAB_H)) return false;
-  TabBtn b[2];
-  const uint8_t n = tabBtns(b);
-  for (uint8_t i = 0; i < n; i++) {
-    const int x = tabBtnX(b, n, i);
-    const int y = tabTop() + (TAB_H - b[i].h) / 2;
-    if ((int)tx >= x && (int)tx < x + b[i].w
-     && (int)ty >= y && (int)ty < y + b[i].h) { *out = b[i].key; return true; }
-  }
-  return false;
-}
-
 // 내용 영역을 비운다. 배경 그림이 있으면 그것으로 채우고, 없으면 탭의 바탕색으로 채운다.
 //
 // 바탕색은 어느 탭이든 설정색(bgColor, 기본 #EBAC42)이다. 헤더 띠·탭 줄의 빈자리도
@@ -1607,7 +1457,7 @@ static bool isLightColor(const char* hex) {
 // 내용 영역 바탕색 — 어느 탭이든 설정색(기본 #EBAC42)이다.
 // 내역만 검정으로 두던 것을 없앴다: 화면이 두 세계로 갈라져 보였고, 줄무늬는
 // 바탕색에서 한 단계 눌러 만들면 밝은 바탕에서도 자연스럽다(bgShade).
-static uint16_t tabBg(Tab t) { (void)t; return hexToColor(cfg.bgColor); }
+static uint16_t screenBg() { return hexToColor(cfg.bgColor); }
 
 // 바탕색에서 한 단계 진한(또는 밝은) 색. 줄무늬와 띠에 쓴다.
 // 밝은 바탕이면 눌러서 어둡게, 어두운 바탕이면 띄워서 밝게 — 바탕이 무슨 색이든
@@ -1636,16 +1486,15 @@ static void clearContent() {
   const int x = BORDER, y = contentTop();
   const int w = tft.width() - BORDER * 2, h = contentH();
 
-  const int idx = (tab == TAB_SPEND) ? 1 : 0;
   contentHasBg = false;
-  C_BG = tabBg(tab);
+  C_BG = screenBg();
 
   // 내역 탭은 배경 그림을 쓰지 않는다 — 목록을 정확히 읽어야 하는 자리다.
   // (바탕색은 다른 탭과 같다. 그림만 안 깐다)
   // 화면을 돌린 기기도 쓰지 않는다(배경은 세로 232x192 로만 만들어 둔다).
-  if (tab != TAB_HISTORY && bgHas[idx] && bgFile[idx].w == w && bgFile[idx].h == h) {
+  if (tab != TAB_HISTORY && bgHas[0] && bgFile[0].w == w && bgFile[0].h == h) {
     char path[64];
-    snprintf(path, sizeof(path), "%s/%s", ART_DIR, bgFile[idx].file);
+    snprintf(path, sizeof(path), "%s/%s", ART_DIR, bgFile[0].file);
     fs::File f = LittleFS.open(path, "r");
     if (f) {
       static uint16_t line[240];
@@ -1670,23 +1519,52 @@ static void contentText(uint16_t fg) {
 }
 
 // ── 글자색 세 벌 ──────────────────────────────────────────────────
-// 같은 자리라도 바탕이 흰색이냐 검정이냐(또는 어두운 배경 사진이냐)에 따라
+// 같은 자리라도 바탕이 밝으냐 어두우냐(또는 어두운 배경 사진이냐)에 따라
 // 읽히는 색이 반대다. 그릴 때마다 고르지 않게 역할로 부른다.
 //   inkMain  제목·이름처럼 가장 먼저 읽혀야 하는 것
 //   inkSub   안내문
 //   inkMuted 곁들이는 값(경과 시간 등)
-// 배경 사진 위에는 늘 흰 글자(사진은 어두운 편이고 무슨 색이 올지 모른다).
-// 사진이 없으면 바탕색의 밝기를 보고 고른다.
+//
+// 세 단계를 **바탕색에서 끌어낸다.** 예전에는 회색 두 벌(C_INK2·C_INK3)을 고정으로
+// 썼는데, 바탕색은 관리자가 아무 색이나 넣을 수 있어서 기본 주황(#EBAC42) 위의
+// 회색처럼 글자가 바탕에 묻는 자리가 생겼다. 이제 가장 잘 읽히는 색(먹색 또는 흰색)에서
+// 바탕 쪽으로 정해진 만큼만 섞어 흐린 단계를 만든다 — 바탕이 무슨 색이든 대비가 남는다.
 static bool lightBg() { return !contentHasBg && isLightColor(cfg.bgColor); }
-static uint16_t inkMain()  { return lightBg() ? C_INK  : TFT_WHITE; }
-static uint16_t inkSub()   { return lightBg() ? C_INK2 : TFT_LIGHTGREY; }
-static uint16_t inkMuted() { return lightBg() ? C_INK3 : TFT_DARKGREY; }
+
+// 바탕 쪽으로 pct% 만큼 섞은 글자색. 0 이면 가장 진한 글자, 100 이면 바탕과 같아진다.
+static uint16_t inkMix(uint8_t pct) {
+  auto nib = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+  };
+  const char* h = cfg.bgColor;
+  int br = 0, bg = 0, bb = 0;                 // 섞어 갈 바탕색
+  if (!contentHasBg && h && strlen(h) == 7 && h[0] == '#') {
+    br = nib(h[1]) * 16 + nib(h[2]);
+    bg = nib(h[3]) * 16 + nib(h[4]);
+    bb = nib(h[5]) * 16 + nib(h[6]);
+  }
+  // 배경 사진 위에서는 바탕을 검정으로 친다 — 흰 글자가 어두운 쪽으로만 흐려진다.
+  const bool light = lightBg();
+  int r = light ?  20 : 255;                  // C_INK / 흰색
+  int g = light ?  22 : 255;
+  int b = light ?  28 : 255;
+  r += (br - r) * pct / 100;
+  g += (bg - g) * pct / 100;
+  b += (bb - b) * pct / 100;
+  return tft.color565(r, g, b);
+}
+
+static uint16_t inkMain()  { return inkMix(0); }
+static uint16_t inkSub()   { return inkMix(28); }
+static uint16_t inkMuted() { return inkMix(48); }
 // 방향색(초록/빨강)도 흰 바탕에서는 한 단계 진한 쪽을 쓴다.
 static uint16_t inkEarn()  { return lightBg() ? C_EARN_D  : C_EARN; }
 static uint16_t inkSpend() { return lightBg() ? C_SPEND_D : C_SPEND; }
 static uint16_t inkDir(bool up) { return up ? inkEarn() : inkSpend(); }
-static uint16_t inkTab()   { return (tab == TAB_SPEND) ? inkSpend()
-                                  : (tab == TAB_EARN)  ? inkEarn() : C_NEUTRAL; }
+
 
 // 비침색(color key). RGB565 에는 알파가 없어서, 서버가 투명했던 자리를 이 색으로
 // 채워 두고 여기서 그 색만 건너뛴다(TFT_eSPI 의 pushImage 투명 인자).
@@ -1769,9 +1647,8 @@ static void drawNavBar(int y, bool up, bool on, const char* text) {
   const uint16_t bar = bgShade(18);          // 바탕에서 한 단계 눌러 띠로 쓴다
   tft.fillRect(x, y, w, HNAV_H, bar);
 
-  // 띠 위 글자도 바탕 밝기를 따른다 — 밝은 바탕이면 어두운 글자.
-  const uint16_t fg = on ? (lightBg() ? C_INK : TFT_WHITE)
-                         : (lightBg() ? C_INK3 : C_NAVOFF);
+  // 띠 위 글자도 바탕에서 끌어낸다 — 꺼진 쪽은 더 섞어 흐리게 둘 뿐이다.
+  const uint16_t fg = on ? inkMain() : inkMix(55);
   const int cx = tft.width() / 2, cy = y + HNAV_H / 2;
 
   // 삼각형은 직접 그린다 — 한글 폰트에 ▲▼ 가 없다(상용 2350자만 구워 넣었다)
@@ -2022,12 +1899,12 @@ static void drawWhoScreen() {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  진행 화면 — 키링 → 확인 → 카드 → 확인 → 완료
+//  진행 화면 — 키링 → 카드 → 완료
 // ══════════════════════════════════════════════════════════════════
 // 글자를 되도록 줄이고 그림으로 말한다. 대상이 어린이라 읽는 것보다 보는 것이 빠르고,
 // 그림은 서버에서 갈아 끼울 수 있어 현장에서 말이 바뀌어도 펌웨어를 다시 굽지 않는다.
 
-// 아래쪽 확인 단추. 화면 폭을 다 쓰는 띠라 손가락으로 누르기 쉽다.
+// 아래쪽 취소 단추. 화면 폭을 다 쓰는 띠라 손가락으로 누르기 쉽다.
 #define BTN_H 46
 
 static int btnY() { return tft.height() - BORDER - BTN_H; }
@@ -2050,104 +1927,61 @@ static bool btnHit(uint16_t tx, uint16_t ty) {
 // 단추가 차지하는 만큼을 뺀 내용 높이
 static int bodyH() { return contentH() - BTN_H - 6; }
 
-// 한 사람의 최근 내역 몇 줄. 사람 화면과 완료 화면이 같은 규칙으로 쓴다.
-static void drawMiniFeed(int top, uint8_t n) {
-  const int ROW = 18, pad = 22;
-  const uint32_t elapsed = (millis() - whoFetchMs) / 1000;
-  useFont(14);
-  for (uint8_t i = 0; i < n && i < whoCount; i++) {
-    const int y = top + i * ROW;
-    char what[24];
-    snprintf(what, sizeof(what), "%ld %s",
-             (long)labs(whoFeed[i].delta), whoFeed[i].delta > 0 ? "지급" : "사용");
-    tft.setTextDatum(ML_DATUM);
-    contentText(inkDir(whoFeed[i].delta > 0));
-    tft.drawString(what, BORDER + pad, y + ROW / 2);
-
-    const uint32_t ago = whoFeed[i].agoSec + elapsed;
-    char when[16];
-    if      (ago < 60)   snprintf(when, sizeof(when), "방금");
-    else if (ago < 3600) snprintf(when, sizeof(when), "%lu분 전", (unsigned long)(ago / 60));
-    else                 snprintf(when, sizeof(when), "%lu시간 전", (unsigned long)(ago / 3600));
-    tft.setTextDatum(MR_DATUM);
-    contentText(inkMuted());
-    tft.drawString(when, tft.width() - BORDER - pad, y + ROW / 2);
-  }
-  useFont(0);
-}
-
-// ── 1단계: 누구인가 ───────────────────────────────────────────────
-// 이름 · 남은 포인트 · 최근 내역. 여기서 확인을 눌러야 다음으로 간다 —
-// 잘못 댄 키링을 되돌릴 수 있는 마지막 자리다.
-static void drawPerson() {
-  clearContent();
-  const int top = contentTop();
-
-  // 탭 줄이 커지면서 본문이 140px 로 줄었다. 이름 20 + 잔액 48 + 안내 14 + 두 줄(36)
-  // 을 그 안에 넣으려고 자리를 촘촘히 잡았다 — 잔액은 크게 두는 쪽을 지켰다.
-  useFont(20);
-  tft.setTextDatum(MC_DATUM);
-  contentText(inkMain());
-  tft.drawString(curName[0] ? curName : curUid, tft.width() / 2, top + 14);
-  useFont(0);
-
-  char b[12];
-  snprintf(b, sizeof(b), "%ld", (long)curBalance);
-  contentText(inkMain());
-  tft.drawString(b, tft.width() / 2, top + 52, 6);
-
-  useFont(14);
-  tft.setTextDatum(MC_DATUM);
-  contentText(inkMuted());
-  tft.drawString("남은 포인트", tft.width() / 2, top + 88);
-  useFont(0);
-
-  if (whoCount) {
-    tft.fillRect(BORDER + 20, top + 99, tft.width() - (BORDER + 20) * 2, 1,
-                 lightBg() ? C_LINE : C_TABBG);
-    drawMiniFeed(top + 102, 2);
-  }
-
-  drawBigButton(cfg.attendanceMode ? (tab == TAB_SPEND ? "사용하기" : "지급하기") : "확인",
-                inkTab());
-}
-
-// ── 2단계: 무엇을 (카드를 기다린다) ───────────────────────────────
+// ── 1단계: 누구에게 · 무엇을 (카드를 기다린다) ────────────────────
+// 이름·잔액을 위에 두고 그 아래로 이 기기에서 쓸 수 있는 카드를 늘어놓는다.
+// 확인 단추가 없어지면서 이 한 장이 "누구인지 보는 자리" 와 "카드를 대는 자리" 를
+// 겸한다 — 잘못 댄 키링은 아래 '취소' 로 물린다.
+//
 // 등록된 카드를 목록으로 함께 보여준다. 어떤 카드가 있는지 모르면 아무 카드나
 // 대 보게 되고, 그때마다 "이 기기에서 쓸 수 없는 카드" 가 떠서 답답해진다.
 static void drawWaitCard() {
   clearContent();
   const int top = contentTop();
+  const int pad = 22;
 
+  // 이름은 왼쪽, 잔액은 오른쪽으로 한 줄에 묶었다. 카드 목록에 자리를 내주려고
+  // 잔액을 48px 에서 26px(내장 4번 폰트)로 줄였다 — 여기서 크게 볼 것은 카드다.
   useFont(20);
-  tft.setTextDatum(MC_DATUM);
+  tft.setTextDatum(ML_DATUM);
   contentText(inkMain());
-  tft.drawString(tab == TAB_SPEND ? "사용 카드를 대주세요" : "지급 카드를 대주세요",
-                 tft.width() / 2, top + 20);
+  tft.drawString(curName[0] ? curName : curUid, BORDER + pad, top + 16);
+  useFont(0);
+
+  char b[12];
+  snprintf(b, sizeof(b), "%ld", (long)curBalance);
+  tft.setTextDatum(MR_DATUM);
+  contentText(inkMain());
+  tft.drawString(b, tft.width() - BORDER - pad, top + 16, 4);
+
   useFont(14);
-  contentText(inkMuted());
-  tft.drawString(curName[0] ? curName : curUid, tft.width() / 2, top + 44);
+  tft.setTextDatum(MC_DATUM);
+  contentText(inkSub());
+  tft.drawString("카드를 대주세요", tft.width() / 2, top + 44);
   useFont(0);
 
   tft.fillRect(BORDER + 20, top + 58, tft.width() - (BORDER + 20) * 2, 1,
                lightBg() ? C_LINE : C_TABBG);
 
-  // 이 기기에서 쓸 수 있는 카드만
-  const int ROW = 24, pad = 22;
+  // 등록된 카드를 모두 보여준다. 지급인지 사용인지는 금액의 색이 말한다
+  // (초록 = 지급, 빨강 = 사용) — 이제 그것이 화면에서 방향을 아는 유일한 자리다.
+  //
+  // 잔액으로 감당이 안 되는 사용 카드는 흐리게 둔다. 대 보고 나서 "포인트가
+  // 모자랍니다" 를 보는 것보다, 대기 전에 눈으로 아는 편이 낫다.
+  const int ROW = 24;
   int y = top + 66;
   uint8_t shown = 0;
   useFont(14);
   for (uint8_t i = 0; i < cardCount; i++) {
-    if (!cardFitsTab(cards[i])) continue;
     if (y + ROW > contentTop() + bodyH()) break;
+    const bool tooMuch = cards[i].spend && curBalance - cards[i].amount < 0;
     tft.setTextDatum(ML_DATUM);
-    contentText(inkSub());
+    contentText(tooMuch ? inkMuted() : inkSub());
     tft.drawString(cards[i].name, BORDER + pad, y + ROW / 2);
 
     char amt[12];
     snprintf(amt, sizeof(amt), "%ld", (long)cards[i].amount);
     tft.setTextDatum(MR_DATUM);
-    contentText(inkTab());
+    contentText(tooMuch ? inkMuted() : inkDir(!cards[i].spend));
     tft.drawString(amt, tft.width() - BORDER - pad, y + ROW / 2);
     y += ROW;
     shown++;
@@ -2165,6 +1999,7 @@ static void drawWaitCard() {
 // ── 3단계: 되었습니다 ─────────────────────────────────────────────
 // 서버에서 올린 그림 한 장으로 말한다. 글자는 잔액과 증감 한 줄뿐이다.
 static void drawDone() {
+  drawFrame();            // 이 화면에서만 테두리가 방향색이 된다(frameColor)
   clearContent();
   const int top = contentTop();
   const bool up = doneDelta > 0;
@@ -2267,7 +2102,6 @@ static void drawTabContent() {
   if (!nfcReady && tab != TAB_HISTORY) { drawNoNfc(); return; }
   if (tab == TAB_HISTORY) { drawHistory(); return; }
   switch (step) {
-    case STEP_PERSON:  drawPerson();   break;
     case STEP_CARD:    drawWaitCard(); break;
     case STEP_DONE:    drawDone();     break;
     default:           drawTagScreen(); break;   // STEP_IDLE — "키링을 대주세요"
@@ -2278,7 +2112,6 @@ static void drawTabContent() {
 static void drawScreen() {
   drawFrame();
   drawHeader();
-  if (tab != TAB_HISTORY) drawTabs();   // 내역은 탭 줄 자리까지 목록이 쓴다
   drawTabContent();
 }
 
@@ -2305,6 +2138,334 @@ static void goToDeepSleep() {
   Serial.println("딥슬립 진입");
   Serial.flush();
   esp_deep_sleep_start();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  블루투스 와이파이 설정 — 못 붙었을 때만 연다
+// ══════════════════════════════════════════════════════════════════
+// 와이파이에 못 붙으면 이 화면에서 멈춰 휴대폰을 기다린다. 그동안 다른 일을 해도
+// 어차피 서버에 못 물어보니, 붙을 때까지 여기서 붙잡는 편이 화면도 코드도 단순하다.
+//
+// ── GATT 구성 ─────────────────────────────────────────────────────
+//   서비스  7f3e1a00-4b21-4c8e-9a11-2d5f6c8e2001   (ChurchDisplayRxBLE 와 같은 뿌리)
+//     WIFI  ...2002  WRITE        휴대폰 → 기기
+//                    {"ssid":"우리교회","pass":"비밀번호"}   넣고 곧바로 붙어 본다
+//                    {"cmd":"scan"}    주변 목록을 훑어 SCAN 에 담는다
+//                    {"cmd":"forget"}  저장해 둔 것을 지운다(구워 넣은 것으로 돌아간다)
+//     STATE ...2003  READ·NOTIFY  기기 → 휴대폰
+//                    {"state":"wait|scan|try|ok|fail","ssid":"...","ip":"...","msg":"..."}
+//     SCAN  ...2004  READ         [{"ssid":"...","rssi":-52,"lock":true}, ...] 최대 10개
+//
+// 비밀번호는 절대 읽어 주지 않는다 — WIFI 는 쓰기 전용이고, STATE 에도 이름만 싣는다.
+// 광고도 설정 모드일 때만 한다. 나올 때 deinit(true) 로 메모리까지 돌려주므로
+// 평소 동작에는 블루투스가 아예 없는 것과 같다.
+#define UUID_PROV_SVC   "7f3e1a00-4b21-4c8e-9a11-2d5f6c8e2001"
+#define UUID_PROV_WIFI  "7f3e1a00-4b21-4c8e-9a11-2d5f6c8e2002"
+#define UUID_PROV_STATE "7f3e1a00-4b21-4c8e-9a11-2d5f6c8e2003"
+#define UUID_PROV_SCAN  "7f3e1a00-4b21-4c8e-9a11-2d5f6c8e2004"
+
+// 아무도 오지 않으면 접는다. 새벽에 공유기가 죽어 재부팅된 기기가 설정 화면을
+// 붙들고 있으면, 아침에 오는 사람은 그것이 고장인 줄 안다 — 끊긴 대기 화면이 낫다.
+// (시험용 빌드에서는 접지 않는다 — 휴대폰을 들고 오는 데 5분이 넘게 걸린다)
+#ifdef FORCE_WIFI_SETUP
+#define PROV_TIMEOUT_MS 0xFFFFFFFFUL
+#else
+#define PROV_TIMEOUT_MS 300000UL     // 5분
+#endif
+#define PROV_BTN_H      44
+
+static NimBLECharacteristic* chrProvState = nullptr;
+static NimBLECharacteristic* chrProvScan  = nullptr;
+static char provName[24] = "";                 // 광고 이름 — 화면에도 이것을 띄운다
+static bool provAdvOn    = false;              // 광고가 실제로 섰나(못 섰으면 화면으로 알린다)
+static char provMsg[48]  = "";                 // 화면 아래 상태줄
+// BLE 콜백은 NimBLE 호스트 태스크에서 돈다. 거기서 와이파이나 플래시를 만지면
+// 그 태스크가 몇 초씩 멈춰 연결이 끊긴다 — 값만 받아 두고 아래 루프에서 처리한다.
+static volatile bool provHasCreds = false, provWantScan = false, provWantForget = false;
+static char provSsid[33] = "", provPass[64] = "";
+
+// ── 화면 ──
+// 탭도 배경 그림도 쓰지 않고 스스로 그린다. 부팅 중(탭을 고르기 전)에도 떠야 하고,
+// 이 화면에서 할 일은 하나뿐이라 다른 것이 끼어들 이유가 없다.
+static int provTop()   { return BORDER + HEAD_H; }
+static int provBtnY()  { return tft.height() - BORDER - PROV_BTN_H; }
+static int provMsgY()  { return provBtnY() - 34; }
+
+// 0 = 다시 시도, 1 = 건너뛰기, -1 = 단추 밖
+static int8_t provBtnHit(uint16_t tx, uint16_t ty) {
+  if ((int)ty < provBtnY() || (int)ty >= provBtnY() + PROV_BTN_H) return -1;
+  const int mid = tft.width() / 2;
+  if ((int)tx < BORDER || (int)tx >= tft.width() - BORDER) return -1;
+  return (int)tx < mid ? 0 : 1;
+}
+
+static void provDrawButtons() {
+  const int gap = 8, y = provBtnY();
+  const int w = (tft.width() - BORDER * 2 - gap) / 2;
+  const int x2 = tft.width() - BORDER - w;
+  tft.fillRoundRect(BORDER, y, w, PROV_BTN_H, 10, C_EARN);
+  tft.fillRoundRect(x2,     y, w, PROV_BTN_H, 10, C_NEUTRAL);
+  useFont(20);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, C_EARN);
+  tft.drawString("다시 시도", BORDER + w / 2, y + PROV_BTN_H / 2);
+  tft.setTextColor(TFT_WHITE, C_NEUTRAL);
+  tft.drawString("건너뛰기", x2 + w / 2, y + PROV_BTN_H / 2);
+  useFont(0);
+}
+
+// 상태줄만 다시 그린다. 붙는 동안 몇 번씩 바뀌는 자리라 화면을 통째로 다시
+// 그리면 깜빡여서 "먹통" 으로 보인다.
+static void provDrawMsg() {
+  const uint16_t bg = hexToColor(cfg.bgColor);
+  const uint16_t ink = inkMain();
+  tft.fillRect(BORDER, provMsgY() - 12, tft.width() - BORDER * 2, 26, bg);
+  useFont(14);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(ink, bg);
+  tft.drawString(provMsg, tft.width() / 2, provMsgY());
+  useFont(0);
+}
+
+static void provSay(const char* msg) {
+  strlcpy(provMsg, msg, sizeof(provMsg));
+  Serial.printf("[설정] %s\n", msg);
+  provDrawMsg();
+}
+
+static void drawProvScreen() {
+  const uint16_t bg  = hexToColor(cfg.bgColor);
+  const uint16_t ink = inkMain();       // 여기도 다른 화면과 같은 대비 규칙을 쓴다
+  const uint16_t sub = inkSub();
+  const int y = provTop();
+  tft.fillRect(BORDER, y, tft.width() - BORDER * 2, tft.height() - y - BORDER, bg);
+
+  useFont(20);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(ink, bg);
+  tft.drawString("와이파이 설정", tft.width() / 2, y + 22);
+
+  useFont(14);
+  tft.setTextColor(sub, bg);
+  tft.drawString("휴대폰 블루투스에서", tft.width() / 2, y + 52);
+  useFont(20);
+  tft.setTextColor(ink, bg);
+  tft.drawString(provName, tft.width() / 2, y + 78);
+  useFont(14);
+  tft.setTextColor(sub, bg);
+  tft.drawString("에 연결해 주세요", tft.width() / 2, y + 102);
+  useFont(0);
+
+  provDrawMsg();
+  provDrawButtons();
+}
+
+// ── GATT ──
+static void provSetState(const char* state, const char* msg) {
+  if (!chrProvState) return;
+  JsonDocument d;
+  d["state"]  = state;
+  d["device"] = TALENT_DEVICE_ID;
+  const char* ssid = provSsid[0] ? provSsid : (wifiSsid[0] ? wifiSsid : WIFI_SSID);
+  d["ssid"] = ssid;                                 // 이름만. 비밀번호는 내보내지 않는다
+  if (WiFi.status() == WL_CONNECTED) d["ip"] = WiFi.localIP().toString();
+  if (msg && msg[0]) d["msg"] = msg;
+  char out[200];
+  const size_t n = serializeJson(d, out, sizeof(out));
+  chrProvState->setValue((uint8_t*)out, n);
+  chrProvState->notify();
+}
+
+class ProvWifiCB : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
+    NimBLEAttValue v = c->getValue();
+    JsonDocument d;
+    if (deserializeJson(d, v.c_str())) {
+      provSetState("fail", "보낸 값을 읽지 못했습니다");
+      return;
+    }
+    const char* cmd = d["cmd"] | "";
+    if (!strcmp(cmd, "scan"))   { provWantScan   = true; return; }
+    if (!strcmp(cmd, "forget")) { provWantForget = true; return; }
+
+    const char* ssid = d["ssid"] | "";
+    if (!ssid[0]) { provSetState("fail", "ssid 가 비어 있습니다"); return; }
+    strlcpy(provSsid, ssid,            sizeof(provSsid));
+    strlcpy(provPass, d["pass"] | "",  sizeof(provPass));
+    provHasCreds = true;                            // 실제 접속은 루프에서
+  }
+};
+static ProvWifiCB provWifiCB;
+
+static void provStart() {
+  snprintf(provName, sizeof(provName), "funfun-%s", TALENT_DEVICE_ID);
+
+  NimBLEDevice::init(provName);
+  NimBLEDevice::setMTU(247);                        // 짧은 JSON 이지만 한 번에 오가게
+
+  NimBLEServer*  srv = NimBLEDevice::createServer();
+  srv->advertiseOnDisconnect(true);
+  NimBLEService* svc = srv->createService(UUID_PROV_SVC);
+
+  NimBLECharacteristic* w = svc->createCharacteristic(UUID_PROV_WIFI, NIMBLE_PROPERTY::WRITE);
+  w->setCallbacks(&provWifiCB);
+  chrProvState = svc->createCharacteristic(UUID_PROV_STATE,
+                                           NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  chrProvScan  = svc->createCharacteristic(UUID_PROV_SCAN, NIMBLE_PROPERTY::READ);
+  chrProvScan->setValue("[]");
+  svc->start();
+
+  NimBLEAdvertising* a = NimBLEDevice::getAdvertising();
+
+  // 순서가 중요하다: enableScanResponse() 는 "데이터를 이미 넣었다" 표시(m_advDataSet)를
+  // 지운다. 데이터를 넣은 뒤에 켜면 start() 가 페이로드를 처음부터 다시 만들어
+  // 여기서 맞춰 둔 것이 날아간다. 그래서 켜는 것을 먼저 한다.
+  a->enableScanResponse(true);
+
+  // 광고 31바이트에 이름(최대 21B)과 128비트 UUID(18B)를 함께 넣으면 넘친다.
+  // 이름만 광고하고 UUID 는 스캔 응답으로 보낸다 — 휴대폰 목록에는 이름이 보여야 한다.
+  NimBLEAdvertisementData adv, rsp;
+  adv.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+  const bool okName = adv.setName(provName);
+  const bool okUuid = rsp.setCompleteServices(NimBLEUUID(UUID_PROV_SVC));
+  const bool okAdv  = a->setAdvertisementData(adv);
+  const bool okRsp  = a->setScanResponseData(rsp);
+
+  // 호스트가 아직 동기화되지 않았으면 광고가 서지 않는다("Host not synced!").
+  // init() 이 돌아온 직후 몇 십 ms 가 그 상태라, 설 때까지 짧게 다시 걸어 본다.
+  provAdvOn = false;
+  for (uint8_t i = 0; i < 20 && !provAdvOn; i++) {
+    provAdvOn = a->start();
+    if (!provAdvOn) delay(100);
+  }
+
+  Serial.printf("[설정] 블루투스 광고 %s — %s (서비스 %s)\n",
+                provAdvOn ? "시작" : "실패", provName, UUID_PROV_SVC);
+  if (!okName || !okUuid || !okAdv || !okRsp)
+    Serial.printf("[설정] 광고 데이터 이름=%d UUID=%d adv=%d rsp=%d\n",
+                  okName, okUuid, okAdv, okRsp);
+}
+
+static void provStop() {
+  NimBLEDevice::deinit(true);        // 메모리까지 돌려준다 — 평소에는 들고 있지 않는다
+  chrProvState = chrProvScan = nullptr;
+  Serial.printf("[설정] 블루투스 종료, 여유 힙=%lu B\n", (unsigned long)ESP.getFreeHeap());
+}
+
+// 주변 목록. 휴대폰에서 이름을 손으로 치는 것보다 골라 주는 편이 오타가 없다.
+static void provScan() {
+  provSay("주변 와이파이를 찾는 중");
+  provSetState("scan", "");
+  const int n = WiFi.scanNetworks();               // 신호 센 순서로 돌아온다
+
+  JsonDocument d;
+  JsonArray arr = d.to<JsonArray>();
+  for (int i = 0; i < n && i < 10; i++) {
+    JsonObject o = arr.add<JsonObject>();
+    o["ssid"] = WiFi.SSID(i);
+    o["rssi"] = WiFi.RSSI(i);
+    o["lock"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+  }
+  char out[512];
+  const size_t len = serializeJson(d, out, sizeof(out));
+  if (chrProvScan) chrProvScan->setValue((uint8_t*)out, len);
+  WiFi.scanDelete();
+
+  char msg[48];
+  snprintf(msg, sizeof(msg), "%d 개를 찾았습니다", n < 0 ? 0 : n);
+  provSay(msg);
+  provSetState("wait", msg);
+}
+
+// 붙을 때까지(또는 '건너뛰기' · 5분) 여기 머문다. 연결됐으면 true.
+static bool provisionMode() {
+  drawFrame();
+  drawHeader();                       // 헤더의 '끊김' 이 왜 이 화면인지 말해 준다
+  provStart();
+  provMsg[0] = '\0';
+  drawProvScreen();
+  // 광고가 서지 않으면 휴대폰에서 아예 보이지 않는다. 빈 화면으로 기다리게 두면
+  // "고장" 이 되므로, 기기를 다시 켜라는 말을 여기서 한다.
+  provSay(provAdvOn ? "기다리는 중" : "블루투스를 열지 못했습니다");
+  provSetState("wait", "");
+  sndFail();                          // 손이 필요한 상태라는 신호
+
+  bool ok = false;
+  const uint32_t t0 = millis();
+  uint32_t lastTouch = 0;
+
+  while (millis() - t0 < PROV_TIMEOUT_MS) {
+    // ── 휴대폰이 보낸 것 ──
+    if (provWantForget) {
+      provWantForget = false;
+      wifiForgetCreds();
+      provSay("저장해 둔 설정을 지웠습니다");
+      provSetState("wait", "저장해 둔 설정을 지웠습니다");
+    }
+    if (provWantScan) {
+      provWantScan = false;
+      provScan();
+    }
+    if (provHasCreds) {
+      provHasCreds = false;
+      char msg[48];
+      snprintf(msg, sizeof(msg), "%s 에 붙는 중", provSsid);
+      provSay(msg);
+      provSetState("try", "");
+      if (wifiTry(provSsid, provPass, 12000)) {
+        wifiSaveCreds(provSsid, provPass);          // 다음 부팅부터는 이것으로 붙는다
+        provSay("연결됐습니다");
+        provSetState("ok", "");
+        sndEarn();
+        delay(1200);                                // 휴대폰이 결과를 읽을 틈
+        ok = true;
+        break;
+      }
+      provSay("붙지 못했습니다");
+      provSetState("fail", "이름이나 비밀번호를 확인해 주세요");
+      sndFail();
+    }
+
+    // ── 화면 단추 ──
+    uint16_t tx, ty;
+    if (tft.getTouch(&tx, &ty) && millis() - lastTouch > cfg.touchDebounceMs) {
+      lastTouch = millis();
+      const int8_t b = provBtnHit(tx, ty);
+      if (b == 0) {                                 // 다시 시도 — 알고 있는 것으로 한 번 더
+        sndMode();
+        provSay("다시 붙어 보는 중");
+        provSetState("try", "");
+        if (wifiConnectKnown(8000)) { ok = true; provSetState("ok", ""); sndEarn(); break; }
+        provSay("아직 붙지 못했습니다");
+        provSetState("fail", "");
+      } else if (b == 1) {                          // 건너뛰기 — 끊긴 채로 쓴다
+        sndMode();
+        break;
+      }
+    }
+    delay(20);
+  }
+
+  provStop();
+  if (ok) Serial.printf("[와이파이] 연결됨 %s\n", WiFi.localIP().toString().c_str());
+  else    Serial.println("[와이파이] 설정 모드를 나갑니다 — 끊긴 채로 계속합니다");
+  return ok;
+}
+
+// 붙고 나서 서버에서 받아 오는 것들. 부팅과 설정 모드 뒤가 같은 길을 쓴다.
+static void afterOnline() {
+  Serial.printf("WiFi 연결됨 %s\n", WiFi.localIP().toString().c_str());
+  // 설정을 받아온다. 실패해도 캐시(또는 기본값)로 계속 간다.
+  if (cfgFetch()) {
+    cardsFetch();                      // 카드 목록도 함께 받아 둔다
+    analogWrite(PIN_TFT_BL, cfg.backlight);  // 밝기만 바로 반영(다시 페이드하면 깜빡인다)
+  }
+  // 이름표는 태깅 즉시 이름을 띄우기 위해 미리 받아 둔다.
+  // 내역은 그 탭을 열 때 받는다 — 부팅을 그만큼 늦출 이유가 없다.
+  rosterFetch();
+  // 그림은 없는 것만 받는다. 이미 있으면 통신하지 않아 부팅이 늦어지지 않는다.
+  artSync();
+  lastCfgFetch = millis();
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2366,7 +2527,7 @@ static void rejectTag(const char* s) {
   lastActivity = millis();
 }
 
-// 확인을 눌렀을 때 실제로 처리한다. 카드가 정해져 있어야 한다.
+// 카드가 정해졌을 때 실제로 처리한다.
 static void commitCard() {
   if (curCard < 0) return;
   const CardEntry& c = cards[curCard];
@@ -2403,44 +2564,18 @@ static void commitCard() {
 static int8_t attendanceCardIndex() {
   if (cfg.attendanceCard[0]) {
     const int8_t i = cardIndexOf(cfg.attendanceCard);
-    if (i >= 0 && cardFitsTab(cards[i])) return i;
+    if (i >= 0) return i;
   }
-  for (uint8_t i = 0; i < cardCount; i++)
-    if (cardFitsTab(cards[i])) return (int8_t)i;
-  return -1;
+  return cardCount ? 0 : -1;     // 정해 둔 것이 없으면 첫 카드
 }
 
-// 확인 단추를 눌렀을 때. 단계마다 뜻이 다르다.
-static void onConfirm() {
-  switch (step) {
-    case STEP_PERSON: {
-      // 출석모드는 여기서 곧바로 처리한다 — 줄이 길 때 태그 한 번으로 끝내려는 것이다
-      if (cfg.attendanceMode) {
-        const int8_t i = attendanceCardIndex();
-        if (i < 0) {
-          sndFail();
-          drawErrorScreen("등록된 카드가 없습니다");
-          overlayUntil = millis() + OVERLAY_MS;
-          return;
-        }
-        curCard = i;
-        commitCard();
-        return;
-      }
-      sndMode();
-      step = STEP_CARD;
-      stepAt = millis();
-      drawWaitCard();
-      break;
-    }
-    case STEP_CARD:                    // '취소'
-      sndMode();
-      resetStep();
-      drawScreen();
-      break;
-    default:                           // 완료 화면에는 단추가 없다(시간이 지나면 저절로 돌아간다)
-      break;
-  }
+// 취소 단추를 눌렀을 때. 진행 중이던 것을 접고 대기로 돌아간다 —
+// 키링을 잘못 댔거나 다른 사람이 먼저 대 버렸을 때 쓰는 자리다.
+// (완료 화면에는 단추가 없다 — 시간이 지나면 저절로 돌아간다)
+static void onCancel() {
+  sndMode();
+  resetStep();
+  drawScreen();
   lastActivity = millis();
 }
 
@@ -2482,13 +2617,6 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
       drawErrorScreen("등록되지 않은 카드입니다");
       overlayUntil = millis() + OVERLAY_MS;
       reportSeen(s);
-      lastActivity = millis();
-      return;
-    }
-    if (!cardFitsTab(cards[ci])) {
-      sndFail();
-      drawErrorScreen(cards[ci].spend ? "사용 카드입니다" : "지급 카드입니다");
-      overlayUntil = millis() + OVERLAY_MS;
       lastActivity = millis();
       return;
     }
@@ -2548,11 +2676,27 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
   strlcpy(curName, whoName, sizeof(curName));
   curBalance = whoBalance;
   curCard = -1;
-  step = STEP_PERSON;
+  step = STEP_CARD;
   stepAt = millis();
   overlayUntil = 0;
-  drawPerson();
   Serial.printf("[키링] %s(%s) 잔액 %ld\n", curUid, curName, (long)curBalance);
+
+  // 출석모드는 카드까지 건너뛴다 — 줄이 길 때 키링 한 번으로 끝내려는 것이다
+  if (cfg.attendanceMode) {
+    const int8_t i = attendanceCardIndex();
+    if (i < 0) {
+      sndFail();
+      drawErrorScreen("등록된 카드가 없습니다");
+      overlayUntil = millis() + OVERLAY_MS;
+      lastActivity = millis();
+      return;
+    }
+    curCard = i;
+    commitCard();                      // 안에서 lastActivity 도 갱신한다
+    return;
+  }
+
+  drawWaitCard();
   lastActivity = millis();
 }
 
@@ -2573,7 +2717,6 @@ void setup() {
 
   // 캐시된 설정을 먼저 읽는다. 서버 왕복을 기다리지 않고 바로 화면을 그리기 위함이다.
   cfgLoadCache();
-  cfgApplyMode();
 
   tft.init();
   // 그림 데이터의 바이트 순서.
@@ -2624,29 +2767,21 @@ void setup() {
     useFont(0);
   }
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) delay(200);
+  wifiLoadSaved();
+  if (!wifiConnectKnown(8000)) {
+    // 알고 있는 것으로는 못 붙었다. 블루투스를 열고 휴대폰에서 넣어 줄 때까지 기다린다.
+    Serial.println("WiFi 연결 실패 — 블루투스 설정 모드로 들어갑니다.");
+    provisionMode();
+  }
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("WiFi 연결됨 %s\n", WiFi.localIP().toString().c_str());
-    // 설정을 받아온다. 실패해도 캐시(또는 기본값)로 계속 간다.
-    if (cfgFetch()) {
-      cfgApplyMode();                    // 잠금/기본 모드가 바뀌었을 수 있다
-      cardsFetch();                      // 카드 목록도 함께 받아 둔다
-      analogWrite(PIN_TFT_BL, cfg.backlight);  // 밝기만 바로 반영(다시 페이드하면 깜빡인다)
-    }
-    // 이름표는 태깅 즉시 이름을 띄우기 위해 미리 받아 둔다.
-    // 내역은 그 탭을 열 때 받는다 — 부팅을 그만큼 늦출 이유가 없다.
-    rosterFetch();
-    // 그림은 없는 것만 받는다. 이미 있으면 통신하지 않아 부팅이 늦어지지 않는다.
-    artSync();
+    afterOnline();
   } else {
     // 연결 못 해도 계속 진행한다. 태깅할 때 실패 사유를 화면에 보여준다.
+    // 헤더의 '끊김' 을 누르면 설정 화면을 다시 열 수 있다.
     Serial.println("WiFi 연결 실패 — 태깅 시 서버 요청이 실패합니다.");
   }
-  Serial.printf("[설정] 출처=%s step=%ld 잠금=%u 슬립=%s\n",
-                cfgFromServer ? "서버" : "캐시/기본값", (long)cfg.talentStep, cfg.modeLock,
+  Serial.printf("[설정] 출처=%s step=%ld 슬립=%s\n",
+                cfgFromServer ? "서버" : "캐시/기본값", (long)cfg.talentStep,
                 cfg.sleepEnabled ? "켬" : "끔");
 
   Wire.begin(PIN_NFC_SDA, PIN_NFC_SCL);
@@ -2662,6 +2797,7 @@ void setup() {
     sndFail();
   }
 
+  wifiWasOnline = WiFi.status() == WL_CONNECTED;
   drawScreen();
   lastActivity = millis();
 }
@@ -2676,44 +2812,41 @@ void loop() {
   if (tft.getTouch(&tx, &ty) && now - lastTouchMs > cfg.touchDebounceMs) {
     lastTouchMs = now;
 
-    // ── 아래쪽 확인 단추 ──
+    // ── 아래쪽 취소 단추 ──
     // 진행 중일 때만 있다. 화면 폭을 다 쓰는 띠라 다른 것과 겹치지 않는다.
-    if (tab != TAB_HISTORY && !overlayUntil
-        && (step == STEP_PERSON || step == STEP_CARD) && btnHit(tx, ty)) {
-      onConfirm();
+    if (tab != TAB_HISTORY && !overlayUntil && step == STEP_CARD && btnHit(tx, ty)) {
+      onCancel();
       return;
     }
     // 헤더의 내역 버튼 — 탭 줄 위에 있어 겹치지 않지만 순서를 정해 둔다.
     if (histHit(tx, ty)) {
-      // 다시 누르면 보던 탭으로 돌아간다 — 띠 전체가 단추라 "나가는 문" 도 같아야
-      // 헤맬 일이 없다.
-      //
-      // cfgApplyMode() 를 쓰지 않는다: 그 함수는 내역을 보고 있으면 탭을 건드리지
-      // 않는다(설정 주기 갱신이 사람을 내역에서 쫓아내지 않게 하려고). 그래서
-      // 여기서 부르면 아무 일도 일어나지 않았다.
-      if (tab == TAB_HISTORY) {
-        tab = prevTab;
-        overlayUntil = 0;
+      // 끊겨 있으면 내역 대신 와이파이 설정으로 간다. 여기가 '끊김' 이라고 적혀
+      // 있는 자리이고, 끊긴 채로는 내역도 받아 오지 못한다 — 눌러서 할 수 있는
+      // 일이 그것뿐이라 그리로 보낸다.
+      if (WiFi.status() != WL_CONNECTED && tab != TAB_HISTORY) {
+        if (provisionMode()) afterOnline();
         resetStep();
-        sndMode();
         drawScreen();
-        lastActivity = now;
+        lastActivity = millis();
         return;
       }
-      if (tab != TAB_HISTORY) {
-        prevTab = tab;                     // 돌아올 자리를 기억해 둔다
+      // 다시 누르면 대기 화면으로 돌아온다 — 띠 전체가 단추라 "나가는 문" 도
+      // 같은 자리여야 헤맬 일이 없다.
+      overlayUntil = 0;
+      resetStep();
+      sndMode();
+      if (tab == TAB_HISTORY) {
+        tab = TAB_MAIN;
+      } else {
         tab = TAB_HISTORY;
-        overlayUntil = 0;
-        resetStep();
-        sndMode();
         // 열 때는 늘 가장 최근 묶음부터 — 지난번에 넘겨 둔 쪽에서 시작하면
         // 방금 찍힌 것이 안 보여 "안 들어갔다" 로 읽힌다.
         if (feedFetchMs == 0 || now - feedFetchMs > 30000 || feedPage != 0) {
           drawFrame(); drawHeader();
           historyLoad(0);
         }
-        drawScreen();
       }
+      drawScreen();
       lastActivity = now;
       return;
     }
@@ -2732,15 +2865,6 @@ void loop() {
       }
     }
 
-    Tab hit;
-    if (tabHit(tx, ty, &hit) && hit != tab) {
-      tab = hit;
-      overlayUntil = 0;                  // 결과가 떠 있었다면 지운다
-      resetStep();                       // 지급하려다 사용 탭으로 넘어가는 사고를 막는다
-      sndMode();
-      // 여기로 오는 것은 지급·사용 두 칸뿐이다(tabBtns). 내역은 헤더 띠로만 간다.
-      drawScreen();
-    }
     lastActivity = now;
   }
 
@@ -2762,8 +2886,7 @@ void loop() {
   // ── 진행 중인 채로 잊혀진 것을 접는다 ──
   // 아이가 키링만 대고 가 버리면 그 이름이 화면에 남는다. 다음 사람이 카드를 대면
   // 앞사람에게 처리되므로, 한동안 아무 일도 없으면 스스로 대기로 돌아간다.
-  if ((step == STEP_PERSON || step == STEP_CARD)
-      && !overlayUntil && now - stepAt > 60000) {
+  if (step == STEP_CARD && !overlayUntil && now - stepAt > 60000) {
     Serial.println("[단계] 60초 무입력 — 대기로 되돌립니다");
     resetStep();
     drawScreen();
@@ -2893,6 +3016,29 @@ void loop() {
     drawHistory();
   }
 
+  // ── 끊겼으면 조용히 다시 붙어 본다 ──
+  // 공유기가 잠깐 재부팅된 정도는 사람이 손대기 전에 스스로 돌아와야 한다.
+  // 걸어만 두고 기다리지 않는다 — 여기서 멈추면 그동안 터치도 태깅도 굳는다.
+  // (비밀번호가 아예 바뀐 경우는 이걸로 안 된다. 그때는 헤더의 '끊김' 을 눌러
+  //  블루투스 설정 화면으로 간다)
+  static uint32_t lastWifiRetry = 0;
+  const bool online = WiFi.status() == WL_CONNECTED;
+  if (!online && now - lastWifiRetry > 30000) {
+    lastWifiRetry = now;
+    WiFi.begin(wifiSsid[0] ? wifiSsid : WIFI_SSID,
+               wifiSsid[0] ? wifiPass : WIFI_PASSWORD);
+  }
+  // 붙었다·끊겼다가 바뀌는 순간에만 손을 댄다.
+  if (online != wifiWasOnline) {
+    wifiWasOnline = online;
+    Serial.printf("[와이파이] %s\n", online ? "다시 붙었습니다" : "끊겼습니다");
+    drawHeader();
+    if (online) {
+      afterOnline();                     // 그동안 바뀐 설정·이름표·카드·그림을 받는다
+      if (!overlayUntil) drawScreen();
+    }
+  }
+
   // ── 설정 주기 갱신 ──
   // 행사 중에 관리자가 값을 바꾸면 기기를 만지지 않고도 반영되게 한다.
   // 한 번에 1초 남짓 멈추므로 주기는 넉넉히(기본 5분) 잡는다.
@@ -2900,9 +3046,8 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED && now - lastCfgFetch > cfg.ttlSec * 1000UL) {
     bool got = cfgFetch();
     lastCfgFetch = millis();             // 실패해도 매 루프 재시도하지 않게
-    // talentStep·modeLock 이 바뀌면 탭 구성과 내용이 달라지므로 함께 다시 그린다
+    // 제목·배경·카드가 바뀌었을 수 있으므로 받은 김에 함께 다시 그린다
     if (got) {
-      cfgApplyMode();
       rosterFetch();                     // 이름이 새로 붙었을 수 있다
       cardsFetch();                      // 카드가 늘거나 금액이 바뀌었을 수 있다
       artSync();                         // 그림이 바뀌었으면 이름이 달라져 다시 받는다

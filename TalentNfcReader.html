@@ -250,12 +250,8 @@
             <input type="number" id="cfStep" value="1" min="1" max="999">
           </div>
           <div class="field">
-            <label for="cfLock">탭 잠금 <code>modeLock</code></label>
-            <select id="cfLock">
-              <option value="both">both — 적립·사용 둘 다</option>
-              <option value="earn">earn — 적립 탭만</option>
-              <option value="spend">spend — 사용 탭만</option>
-            </select>
+            <label for="cfBg">내용 영역 바탕색 <code>bgColor</code></label>
+            <input type="color" id="cfBg" value="#EBAC42">
           </div>
           <div class="field">
             <label for="cfRot">거치 방향 <code>rotation</code></label>
@@ -280,21 +276,6 @@
             <code style="font-family:'IBM Plex Mono',monospace;font-size:12px">sleepEnabled</code>
             <span class="note">기본 꺼짐 — 상시 전원 기기가 대부분이라 화면이 꺼지면 안 된다</span></label>
         </div>
-      </section>
-
-      <section class="panel">
-        <h2>메뉴 항목 그림 <em>POST /api/talent/art/menu/&lt;탭&gt;~&lt;이름&gt;</em></h2>
-        <p class="note" style="margin:0 0 10px">
-          지금 고른 항목에 그림을 끼운다. 기기는 이것을 서버에서 받아 두고, 화면 왼쪽
-          큰 칸(124×218)에 그린다 — 메뉴 줄은 108×28 로 이미 꽉 차 아이콘이 들어가지 않는다.
-          폭 108px, 세로 136px 까지로 줄여 그린다.
-        </p>
-        <div class="btnrow">
-          <input type="file" id="miArt" accept="image/*" style="display:none">
-          <button class="act" id="btnMiArt">그림 고르기</button>
-          <button class="act ghost" id="btnMiArtClear">그림 지우기</button>
-        </div>
-        <p class="note" id="miArtWho" style="margin:8px 0 0"></p>
       </section>
 
       <section class="panel">
@@ -368,18 +349,14 @@ const TFT = {
   NAVOFF:'#5c606a'     // 눌러도 소용없는 페이지 띠
 };
 
-/* 화면 치수 — 세로 240×320 기준 */
-/* 탭 줄 높이 78 — 그림 버튼(72px) + 여백. 그림에 바깥 배경까지 들어 있어
-   누를 수 있는 자리가 알약 모양이 아니라 그림 사각형 전체다(.ino 와 같다). */
-const BORDER = 4, HEAD_H = 42, TAB_H = 78;
-/* 오른쪽 메뉴 칸. 14px 한글 5자(70px) + 여백 12 + 세 자리 금액(24px) = 106 → 108.
-   서버가 이름 5자·금액 999 로 조이는 근거가 이 계산이다. */
-const MENU_W = 108, MENU_ROW = 28;
+/* 화면 치수 — 세로 240×320 기준.
+   예전에는 헤더 아래에 78px 짜리 탭 줄(지급·사용 그림 버튼)이 있었다. 방향을 카드가
+   정하게 되면서 고를 것이 없어져 걷어냈고, 그 자리는 내용이 가져갔다(.ino 와 같다). */
+const BORDER = 4, HEAD_H = 42;
 function W(){ return (cfg.rotation % 2 === 0) ? 240 : 320 }
 function H(){ return (cfg.rotation % 2 === 0) ? 320 : 240 }
 const headTop    = () => BORDER;
-const tabTop     = () => BORDER + HEAD_H;
-const contentTop = () => BORDER + HEAD_H + TAB_H;
+const contentTop = () => BORDER + HEAD_H;
 
 /* 화면 그림 — 기기와 같은 것들(tools/make-artwork.py 가 굽는 원본). */
 const IMG = {};
@@ -396,7 +373,6 @@ for (const [k, src] of Object.entries({
 })) { IMG[k] = new Image(); IMG[k].src = src; }
 
 const DEF_LABEL = '펀펀포인트';
-const C_STRIP = '#ffffff';          // 탭 줄 배경 — 헤더 띠와 같은 흰색
 
 /* 포인트 그림 — 금액마다 만들 수 없어 몇 개만 두고 나머지는 "× N" 으로 표현한다.
    사용 탭에는 쓰지 않는다: 그림이 "적립" 이라고 말하고 있어 갖다 쓰면 거짓말이 된다. */
@@ -457,24 +433,14 @@ function drawString(text,x,y,{size=14,datum='MC',color=TFT.WHITE,weight=500}={})
 const cfg = {
   attendanceMode: false,   // 출석모드 — 키링 한 번으로 바로 지급
   doneMs: 3000,            // 완료 그림을 띄워 두는 시간
-  deviceLabel:'펀펀포인트', talentStep:1, modeLock:'both',
-  /* 항목마다 그림을 하나씩 붙일 수 있다(img: Image). 기기는 서버가 설정 응답의
-     항목에 붙여 준 파일 이름으로 받아 두지만, 이 시뮬레이터는 서버가 없으므로
-     아래 "메뉴 항목 그림" 패널에서 로컬 파일을 골라 끼운다. */
-  earnMenu:  [{name:'출석',amount:5},{name:'새친구',amount:20},{name:'전도',amount:50}],
-  spendMenu: [{name:'컵라면',amount:5},{name:'젤리',amount:10},{name:'아이스크림',amount:15}],
+  deviceLabel:'펀펀포인트', talentStep:1, bgColor:'#EBAC42',
   sleepEnabled:false, sleepTimeoutMs:15000, tagCooldownMs:1500,
   rotation:0, backlight:255, sound:true
 };
 
-let tab = 'earn';               // 'earn' | 'spend' | 'history'
-/* 고른 항목은 탭마다 따로 기억한다 */
-const sel = { earn:0, spend:0 };
-const curMenu  = () => (tab === 'spend' ? cfg.spendMenu : tab === 'earn' ? cfg.earnMenu : []);
-const hasMenu  = () => tab !== 'history' && curMenu().length > 0;
-const curItem  = () => curMenu()[sel[tab]] || null;
-const curAmt   = () => (curItem() ? curItem().amount : cfg.talentStep);
-const curName  = () => (curItem() ? curItem().name : '');
+/* 화면은 둘뿐이다 — 평소(대기·카드·완료)와 내역 보기. 지급이냐 사용이냐는
+   화면이 아니라 대는 카드가 정한다(.ino 의 enum Tab). */
+let tab = 'main';               // 'main' | 'history'
 let nfcReady = true, wifiUp = true;
 let asleep = false, busy = false;
 let overlay = null;             // 결과·오류가 떠 있는 동안의 내용
@@ -500,8 +466,9 @@ let feedPage = 0;                              // 0 이 가장 최근 묶음
 
 /* ── 진행 단계 ──────────────────────────────────────────────
    기기와 같은 상태 기계다(.ino 의 enum Step).
-     대기 → 사람(이름·잔액·최근내역) → 확인 → 카드 대기 → 확인 → 완료
-   키링을 대면 '사람' 으로, 카드를 대면 '확인' 으로 간다. */
+     대기 → 카드 대기(이름·잔액·카드 목록) → 완료
+   키링을 대면 '카드 대기' 로, 카드를 대면 '완료' 로 간다. 확인 단추는 없다 —
+   잘못 댄 키링은 '취소' 로 물린다. */
 let flow = 'idle';
 let flowWho = null;                            // { uid, name, bal }
 let flowCard = null;                           // 고른 카드
@@ -514,17 +481,14 @@ let cards = [
   { uid:'04C7D8E9', name:'컵라면',     amount: 5,  side:'spend' },
   { uid:'04CADBEC', name:'아이스크림', amount: 15, side:'spend' },
 ];
-const cardsFor = () => cards.filter(c => (tab === 'spend' ? c.side === 'spend' : c.side === 'earn'));
 const cardByUid = (uid) => cards.find(c => c.uid === uid) || null;
 let roster = new Map();                        // GET /api/talent/roster
 
-const tabsAvailable = () =>
-  cfg.modeLock === 'earn'  ? ['earn','history'] :
-  cfg.modeLock === 'spend' ? ['spend','history'] :
-                             ['earn','spend','history'];
-
-const modeColor = () =>
-  tab === 'earn' ? TFT.EARN : tab === 'spend' ? TFT.SPEND : TFT.NEUTRAL;
+/* 테두리 색. 방향은 카드를 댄 뒤에야 정해지므로, 그전까지는 회색이다 —
+   아직 아무 방향도 아닌데 초록이나 빨강을 띄우면 그 색이 거짓말이 된다. */
+const frameColor = () =>
+  (flow === 'done' && flowCard) ? (flowCard.side === 'spend' ? TFT.SPEND : TFT.EARN)
+                                : TFT.NEUTRAL;
 
 /* ══════════════════════════════════════════════════════════════
    화면
@@ -533,7 +497,7 @@ const modeColor = () =>
 /* 테두리가 지금 태깅하면 무슨 일이 일어나는지 말해 준다 —
    초록이면 적립, 빨강이면 사용, 회색이면 태깅이 처리되지 않는다.  */
 function drawFrame(){
-  const c = modeColor();
+  const c = frameColor();
   fillRect(0, 0, W(), BORDER, c);
   fillRect(0, H()-BORDER, W(), BORDER, c);
   fillRect(0, 0, BORDER, H(), c);
@@ -543,11 +507,10 @@ function drawFrame(){
 /* 헤더 — 로고 · (제목) · 내역 버튼 · 연결 상태.
    내역은 예전에 세 번째 탭이었는데, 탭이 그림 버튼으로 커지면서 셋을 나란히 두면
    한 칸이 반 폭이 되어 그림이 뭉개진다. 태깅과 상관없는 "보기" 라 헤더로 옮겼다. */
-const histRect = () => {
-  const ih = 26, iw = Math.round((IMG.hist.naturalWidth || 55) * ih / (IMG.hist.naturalHeight || 26));
-  const oh = 24, ow = Math.round((IMG.online.naturalWidth || 36) * oh / (IMG.online.naturalHeight || 24));
-  return { x: W() - BORDER - 8 - ow - 8 - iw, y: headTop() + (HEAD_H - ih)/2, w: iw, h: ih };
-};
+/* 내역 단추는 헤더 띠 **전체**다(.ino 의 histHit). 작은 아이콘 하나보다 띠 전체가
+   훨씬 누르기 쉽고, 관리자가 올린 띠 그림에 자리를 뺏기지도 않는다.
+   보고 있는 중이라는 표시는 테두리가 아니라 화면 내용이 한다. */
+const histRect = () => ({ x: BORDER, y: headTop(), w: W() - BORDER*2, h: HEAD_H });
 
 function drawHeader(){
   const x0 = BORDER, w = W() - BORDER*2, y = headTop();
@@ -562,13 +525,6 @@ function drawHeader(){
     if (named) kr20(cfg.deviceLabel, x0 + 8 + lw + 8, y + HEAD_H/2, { datum:'ML', color:TFT.HEADTXT });
   }
 
-  /* 내역 버튼 — 보고 있을 때만 색이 있고, 아닐 때는 회색 */
-  if (IMG.hist.complete && IMG.hist.naturalWidth){
-    const r = histRect();
-    const img = tab === 'history' ? IMG.hist : IMG.histOff;
-    ctx.drawImage(img, r.x, r.y, r.w, r.h);
-  }
-
   /* 연결이 끊긴 것은 태깅하다 실패하기 전에 여기서 먼저 보여야 한다 */
   if (wifiUp){
     if (IMG.online.complete && IMG.online.naturalWidth){
@@ -580,41 +536,45 @@ function drawHeader(){
   }
 }
 
-/* 탭 — 적립·사용 두 그림 버튼. 그림에 글자가 들어 있어 따로 그리지 않는다.
-   고른 쪽은 색이 있는 그림, 고르지 않은 쪽은 회색 그림 — 두 벌을 따로 굽는다. */
-function tabBtns(){
-  const list = [];
-  if (cfg.modeLock !== 'spend') list.push({ key:'earn',  img: IMG.tabE, off: IMG.tabEoff });
-  if (cfg.modeLock !== 'earn')  list.push({ key:'spend', img: IMG.tabS, off: IMG.tabSoff });
-  /* 틈 0 — 두 그림이 원본 한 장을 반으로 가른 것이라 붙여야 바깥 테두리가 이어진다 */
-  const h = 72, gap = 0;
-  const sized = list.map(b => ({
-    ...b, h, w: Math.round((b.img.naturalWidth || 97) * h / (b.img.naturalHeight || 44)),
-  }));
-  const total = sized.reduce((n, b) => n + b.w, 0) + gap * (sized.length - 1);
-  let x = (W() - total) / 2;
-  const y = tabTop() + (TAB_H - h) / 2;
-  return sized.map(b => { const r = { ...b, x, y }; x += b.w + gap; return r; });
-}
+/* ── 바탕색과 글자색 ────────────────────────────────────────
+   내용 영역 바탕은 어느 화면이든 설정색(bgColor, 기본 #EBAC42)이다 — 내역만 검정으로
+   두던 것을 없앴다(화면이 두 세계로 갈라져 보였다). 줄무늬·띠는 그 바탕에서
+   한 단계 눌러 만든다(bgShade).
 
-function drawTabs(){
-  fillRect(BORDER, tabTop(), W() - BORDER*2, TAB_H, C_STRIP);
-  /* 고르지 않은 쪽은 회색 원본을 그대로 쓴다 — 계산으로 어둡게 만들지 않는다 */
-  for (const b of tabBtns()){
-    const img = b.key === tab ? b.img : b.off;
-    if (!img.complete || !img.naturalWidth) continue;
-    ctx.drawImage(img, b.x, b.y, b.w, b.h);
-  }
-}
+   글자색 세 단계는 **바탕에서 끌어낸다**(.ino 의 inkMix). 회색 두 벌을 고정으로
+   쓰던 때는 바탕색을 바꾸면 흐린 글자가 바탕에 묻었다 — 기본 주황 위의 회색이
+   그랬다. 가장 잘 읽히는 색(먹색 또는 흰색)에서 바탕 쪽으로 정한 만큼만 섞는다. */
+const rgbOf = (hex) => {
+  const h = String(hex || '').replace('#', '');
+  return [parseInt(h.slice(0,2),16) || 0, parseInt(h.slice(2,4),16) || 0, parseInt(h.slice(4,6),16) || 0];
+};
+const hexOf = (r,g,b) => '#' + [r,g,b].map(v =>
+  Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2,'0')).join('');
 
-/* 바탕색은 탭마다 다르다 — 적립·사용은 헤더 띠·탭 줄과 이어지는 흰색, 내역은 검정.
-   (내역은 한 줄 걸러 어둡게 깐 줄무늬가 흰 바탕에서 뒤집혀 보인다) */
-const contentBg = () => (tab === 'history' ? TFT.BLACK : TFT.WHITE);
-const lightBg   = () => contentBg() === TFT.WHITE;
-/* 같은 자리라도 바탕에 따라 읽히는 색이 반대다. 자리마다 고르지 않고 역할로 부른다. */
-const inkMain   = () => (lightBg() ? TFT.INK  : TFT.WHITE);
-const inkSub    = () => (lightBg() ? TFT.INK2 : TFT.LIGHTGREY);
-const inkMuted  = () => (lightBg() ? TFT.INK3 : TFT.DARKGREY);
+const contentBg = () => cfg.bgColor;
+/* 사람 눈은 초록에 민감하고 파랑에 둔하다(BT.601) — .ino 의 isLightColor 와 같은 식 */
+const lightBg = () => {
+  const [r,g,b] = rgbOf(cfg.bgColor);
+  return (r*299 + g*587 + b*114) / 1000 >= 140;
+};
+/* 바탕에서 한 단계 진한(밝은) 색 — 줄무늬와 페이지 띠 */
+const bgShade = (amt) => {
+  let [r,g,b] = rgbOf(cfg.bgColor);
+  if (lightBg()) { r = r*(100-amt)/100; g = g*(100-amt)/100; b = b*(100-amt)/100; }
+  else           { r += (255-r)*amt/100; g += (255-g)*amt/100; b += (255-b)*amt/100; }
+  return hexOf(r,g,b);
+};
+/* 바탕 쪽으로 pct% 섞은 글자색. 0 이면 가장 진한 글자, 100 이면 바탕과 같아진다. */
+const inkMix = (pct) => {
+  const [br,bg,bb] = rgbOf(cfg.bgColor);
+  const light = lightBg();
+  const r = light ? 20 : 255, g = light ? 22 : 255, b = light ? 28 : 255;
+  return hexOf(r + (br-r)*pct/100, g + (bg-g)*pct/100, b + (bb-b)*pct/100);
+};
+const inkMain   = () => inkMix(0);
+const inkSub    = () => inkMix(28);
+const inkMuted  = () => inkMix(48);
+/* 방향색(초록/빨강)도 밝은 바탕에서는 한 단계 진한 쪽을 쓴다 */
 const inkDir    = (up) => (lightBg() ? (up ? TFT.EARN_D : TFT.SPEND_D)
                                      : (up ? TFT.EARN   : TFT.SPEND));
 
@@ -622,105 +582,14 @@ function clearContent(){
   fillRect(BORDER, contentTop(), W()-BORDER*2, H()-contentTop()-BORDER, contentBg());
 }
 
-/* ── 오른쪽 메뉴 칸 ──────────────────────────────────────────
-   항목별 포인트를 목록으로 두고 눌러서 고른다. 고른 것만 색을 채워
-   "지금 태깅하면 얼마" 가 한눈에 보이게 한다 — 왼쪽 큰 숫자와 같은 값이다. */
-function menuRects(){
-  if (!hasMenu()) return [];
-  const x = W() - BORDER - MENU_W;
-  const top = contentTop() + 4;
-  const contentH = H() - contentTop() - BORDER;
-  const room = Math.floor((contentH - 8) / MENU_ROW);
-  return curMenu().slice(0, room).map((it, i) => ({
-    i, item:it, x, y: top + i*MENU_ROW, w: MENU_W, h: MENU_ROW
-  }));
-}
-
-function drawMenu(){
-  const rects = menuRects();
-  if (!rects.length) return;
-  const col = inkDir(tab === 'earn');
-  /* 고른 줄 위의 글자색 — 흰 바탕에서는 방향색이 진해져 검정 글씨가 묻힌다 */
-  const onFg = lightBg() ? TFT.WHITE : TFT.BLACK;
-  const x = W() - BORDER - MENU_W;
-  const contentH = H() - contentTop() - BORDER;
-
-  /* 왼쪽 안내와 목록을 가르는 선 */
-  fillRect(x - 1, contentTop(), 1, contentH, lightBg() ? TFT.LINE : TFT.TAB_BG);
-
-  for (const r of rects){
-    const on = r.i === sel[tab];
-    fillRect(r.x, r.y, r.w, r.h, on ? col : contentBg());
-    kr(r.item.name, r.x + 6, r.y + r.h/2, { datum:'ML', color: on ? onFg : inkSub() });
-    kr(r.item.amount, r.x + r.w - 6, r.y + r.h/2, { datum:'MR', color: on ? onFg : inkMuted() });
-  }
-
-  /* 다 못 들어간 항목이 있으면 알린다 — 조용히 잘리면 "메뉴가 사라졌다"가 된다 */
-  const hidden = curMenu().length - rects.length;
-  if (hidden > 0) kr(`+${hidden}`, x + MENU_W/2, contentTop() + contentH - 8, { color:inkMuted() });
-}
-
-/* ── 적립 / 사용 탭 ───────────────────────────────────────────
-   메뉴가 있으면 왼쪽은 "무엇을 얼마나", 오른쪽은 고르는 목록으로 나눈다. */
+/* ── 대기 화면 ───────────────────────────────────────────────
+   그림 한 장으로 말하는 자리다(기기는 배경 그림을 올려 두면 그것만 보여준다).
+   숫자도 '지급/사용' 글자도 없다 — 얼마를 어느 쪽으로 처리할지는 카드가 정하므로,
+   여기에 무엇을 적어 두면 그 값으로 처리되는 것처럼 읽힌다. */
 function drawTagScreen(){
   clearContent();
-  const earn = tab === 'earn';
-  const col = inkDir(earn);
   const top = contentTop(), h = H() - contentTop() - BORDER;
-
-  /* 대기 화면 — 그림 한 장으로 말하는 자리다. 배경(bg)을 올려 두면 그것만 보여준다.
-     숫자와 "포인트 지급" 글자는 걷어냈다: 오르내리는 양은 이제 대기 화면이 아니라
-     카드가 정하므로, 여기에 숫자를 띄우면 그 값으로 처리되는 것처럼 읽힌다.
-     배경이 없을 때만 한 줄을 남긴다 — 빈 흰 화면은 고장으로 보인다. */
-  if (!hasMenu()){
-    kr20('키링을 대주세요', W()/2, top + h/2, { color:inkMain() });
-    setFn('drawTagScreen() — 대기');
-    return;
-  }
-
-  drawMenu();
-  const paneW = W() - BORDER*2 - MENU_W;
-  const cx = BORDER + paneW/2;
-
-  /* 고른 항목에 딸린 그림이 있으면 가장 먼저 쓴다. 사용 탭에도 그림이 생긴다.
-     포인트 그림과 달리 금액을 글자로 함께 적는다 — 컵라면 그림은 "5" 를 말해 주지 않는다.
-     그 한 줄(26px)까지 보고 ih + 82 <= 218, 곧 그림 높이 136px 까지만 그린다. */
-  const mine = curItem() && curItem().img;
-  if (mine && mine.complete && mine.naturalWidth){
-    const iw = Math.min(108, paneW - 4);
-    const ih = Math.min(136, Math.round(mine.naturalHeight * iw / mine.naturalWidth));
-    kr('키링을 대주세요', cx, top + 14, { color:inkSub() });
-    kr20(curName(), cx, top + 40, { color:inkMain() });
-    const iy = top + 56 + (h - 56 - 26 - ih) / 2;
-    ctx.drawImage(mine, cx - iw/2, iy, iw, ih);
-    kr(`${curAmt()} 포인트 ${earn ? '적립' : '사용'}`, cx, iy + ih + 14, { color: col });
-    setFn('drawTagScreen() — 항목 그림');
-    return;
-  }
-
-  /* 적립은 그림으로. 그림 한 장이 "5 포인트 적립" 을 통째로 말하므로
-     숫자도 "포인트 적립" 글자도 따로 그리지 않는다. */
-  const pick = earn ? pickArt(curAmt()) : null;
-  if (pick && pick.art.img.complete && pick.art.img.naturalWidth){
-    /* 108 은 기기의 ART_W 다. 예전에 116 으로 적혀 있어 시뮬레이터만 조금 크게 그렸다. */
-    const iw = 108, ih = Math.round(pick.art.img.naturalHeight * iw / pick.art.img.naturalWidth);
-    kr('키링을 대주세요', cx, top + 14, { color:inkSub() });
-    kr20(curName(), cx, top + 40, { color:inkMain() });
-
-    const tail = pick.mult > 1 ? 26 : 0;
-    const iy = top + 56 + (h - 56 - tail - ih) / 2;
-    ctx.drawImage(pick.art.img, cx - iw/2, iy, iw, ih);
-
-    if (pick.mult > 1) kr20(`× ${pick.mult}`, cx, iy + ih + 14, { color: col });
-    setFn(`drawTagScreen() — 그림 ${pick.art.base}×${pick.mult}`);
-    return;
-  }
-
-  /* 그림이 없는 금액과 사용 탭은 숫자로 */
-  kr('키링을 대주세요', cx, top + h*0.17, { color:inkSub() });
-  kr20(curName(), cx, top + h*0.34, { color:inkMain() });
-  num(curAmt(), cx, top + h*0.57, { color: col });
-  kr(earn ? '포인트 적립' : '포인트 사용', cx, top + h*0.75, { color: col });
+  kr20('키링을 대주세요', W()/2, top + h/2, { color:inkMain() });
   setFn('drawTagScreen()');
 }
 
@@ -749,8 +618,8 @@ const feedPageRows = () => feed.slice(feedPage * feedRows(), (feedPage + 1) * fe
 const feedHasMore  = () => feed.length > (feedPage + 1) * feedRows();
 
 function drawNavBar(y, up, on, label){
-  fillRect(BORDER, y, W() - BORDER*2, HNAV_H, TFT.TAB_BG);
-  const fg = on ? TFT.WHITE : TFT.NAVOFF;
+  fillRect(BORDER, y, W() - BORDER*2, HNAV_H, bgShade(18));
+  const fg = on ? inkMain() : inkMix(55);
   const cy = y + HNAV_H/2, tw = 5, th = 5, tx = BORDER + 12;
   /* 삼각형은 직접 그린다 — 기기의 한글 폰트에 ▲▼ 가 없다(상용 2350자만 굽는다) */
   ctx.fillStyle = fg;
@@ -788,18 +657,19 @@ function drawHistory(){
   for (let i = 0; i < rows.length; i++){
     const l = rows[i];
     const y = listTop + i*HROW + HROW/2;
-    if (i % 2) fillRect(BORDER, listTop + i*HROW, W()-BORDER*2, HROW, TFT.ROW_ALT);
+    /* 한 줄 걸러 바탕을 한 단계 눌러 깐다 — 바탕색이 무엇이든 뒤집히지 않는다 */
+    if (i % 2) fillRect(BORDER, listTop + i*HROW, W()-BORDER*2, HROW, bgShade(8));
 
-    kr(l.name || l.uid, BORDER + pad, y, { datum:'ML', color:TFT.WHITE });
-    kr(timeAgo(l.at), W()/2 + 16, y, { datum:'MR', color:TFT.DARKGREY });
+    kr(l.name || l.uid, BORDER + pad, y, { datum:'ML', color:inkMain() });
+    kr(timeAgo(l.at), W()/2 + 16, y, { datum:'MR', color:inkMuted() });
     /* 부호 대신 색으로만 방향을 말한다 */
-    kr(`${Math.abs(l.delta)} ${l.delta > 0 ? '적립' : '사용'}`, W() - BORDER - pad, y,
-       { datum:'MR', color: l.delta > 0 ? TFT.EARN : TFT.SPEND });
+    kr(`${Math.abs(l.delta)} ${l.delta > 0 ? '지급' : '사용'}`, W() - BORDER - pad, y,
+       { datum:'MR', color: inkDir(l.delta > 0) });
   }
   setFn(`drawHistory() — ${feedPage + 1}쪽`);
 }
 
-/* ── 아래쪽 확인 단추 ──
+/* ── 아래쪽 취소 단추 ──
    화면 폭을 다 쓰는 띠라 손가락으로 누르기 쉽다. 진행 중일 때만 있다. */
 const BTN_H = 46;
 const btnY = () => H() - BORDER - BTN_H;
@@ -813,49 +683,32 @@ function drawBigButton(label, col){
   kr20(label, W()/2, btnY() + BTN_H/2, { color:TFT.WHITE });
 }
 
-/* 한 사람의 최근 내역 몇 줄 */
-function drawMiniFeed(top, uid, n){
-  const rows = feed.filter(l => l.uid === uid).slice(0, n);
-  const ROW = 21, pad = 22;
-  rows.forEach((l, i) => {
-    const y = top + i*ROW + ROW/2;
-    kr(`${Math.abs(l.delta)} ${l.delta > 0 ? '지급' : '사용'}`, BORDER + pad, y,
-       { datum:'ML', color: inkDir(l.delta > 0) });
-    kr(timeAgo(l.at), W() - BORDER - pad, y, { datum:'MR', color:inkMuted() });
-  });
-  return rows.length;
-}
-
-/* 1단계 — 누구인가. 여기서 확인을 눌러야 다음으로 간다 (잘못 댄 키링을 무를 마지막 자리) */
-function drawPerson(){
-  clearContent();
-  const top = contentTop(), w = flowWho;
-  kr20(w.name || w.uid, W()/2, top + 20, { color:inkMain() });
-  num(w.bal, W()/2, top + 64, { color:inkMain() });
-  kr('남은 포인트', W()/2, top + 100, { color:inkMuted() });
-  fillRect(BORDER + 20, top + 118, W() - (BORDER+20)*2, 1, lightBg() ? TFT.LINE : TFT.TAB_BG);
-  drawMiniFeed(top + 124, w.uid, 2);
-  drawBigButton(cfg.attendanceMode ? (tab === 'spend' ? '사용하기' : '지급하기') : '확인',
-                inkDir(tab !== 'spend'));
-  setFn('drawPerson()');
-}
-
-/* 2단계 — 카드를 기다린다. 어떤 카드가 있는지 함께 보여준다 —
-   모르면 아무 카드나 대 보게 되고, 그때마다 거절돼 답답해진다. */
+/* 1단계 — 누구에게 · 무엇을. 확인 단추가 없어지면서 이 한 장이 "누구인지 보는 자리" 와
+   "카드를 대는 자리" 를 겸한다. 잘못 댄 키링은 아래 '취소' 로 물린다.
+   등록된 카드를 함께 보여주는 이유 — 모르면 아무 카드나 대 보게 되고, 그때마다 거절돼 답답해진다. */
 function drawWaitCard(){
   clearContent();
-  const top = contentTop();
-  kr20(tab === 'spend' ? '사용 카드를 대주세요' : '지급 카드를 대주세요',
-       W()/2, top + 20, { color:inkMain() });
-  kr(flowWho.name || flowWho.uid, W()/2, top + 44, { color:inkMuted() });
-  fillRect(BORDER + 20, top + 58, W() - (BORDER+20)*2, 1, lightBg() ? TFT.LINE : TFT.TAB_BG);
+  const top = contentTop(), pad = 22;
 
-  const ROW = 24, pad = 22;
+  /* 이름은 왼쪽, 잔액은 오른쪽 한 줄. 카드 목록에 자리를 내주려고 잔액을
+     48px 에서 26px(내장 4번)로 줄였다 — 여기서 크게 볼 것은 카드다. */
+  kr20(flowWho.name || flowWho.uid, BORDER + pad, top + 16, { datum:'ML', color:inkMain() });
+  num(flowWho.bal, W() - BORDER - pad, top + 16, { datum:'MR', font:4, color:inkMain() });
+
+  kr('카드를 대주세요', W()/2, top + 44, { color:inkSub() });
+  fillRect(BORDER + 20, top + 58, W() - (BORDER+20)*2, 1, bgShade(20));
+
+  /* 등록된 카드를 모두 보여준다. 지급인지 사용인지는 금액의 색이 말한다
+     (초록 = 지급, 빨강 = 사용). 잔액으로 감당이 안 되는 사용 카드는 흐리게 둔다 —
+     대 보고 나서 "포인트가 모자랍니다" 를 보는 것보다 대기 전에 아는 편이 낫다. */
+  const ROW = 24;
   let y = top + 66, shown = 0;
-  for (const c of cardsFor()){
+  for (const c of cards){
     if (y + ROW > bodyBottom()) break;
-    kr(c.name, BORDER + pad, y + ROW/2, { datum:'ML', color:inkSub() });
-    kr(c.amount, W() - BORDER - pad, y + ROW/2, { datum:'MR', color:inkDir(tab !== 'spend') });
+    const tooMuch = c.side === 'spend' && flowWho.bal - c.amount < 0;
+    kr(c.name, BORDER + pad, y + ROW/2, { datum:'ML', color: tooMuch ? inkMuted() : inkSub() });
+    kr(c.amount, W() - BORDER - pad, y + ROW/2,
+       { datum:'MR', color: tooMuch ? inkMuted() : inkDir(c.side !== 'spend') });
     y += ROW; shown++;
   }
   if (!shown) kr('등록된 카드가 없습니다', W()/2, top + 100, { color:inkMuted() });
@@ -904,7 +757,7 @@ function drawOverlay(){
     kr20(overlay.who, W()/2, top + 22, { color:inkMain() });
     if (!overlay.known){
       kr('아직 등록되지 않은 키링입니다', W()/2, top + 62, { color:inkSub() });
-      kr('적립 탭에서 대면 등록됩니다',   W()/2, top + 88, { color:inkMuted() });
+      kr('관리자에게 알려 주세요',   W()/2, top + 88, { color:inkMuted() });
       setFn('drawWhoScreen() — 모르는 키링'); return;
     }
     num(overlay.balance, W()/2, top + 68, { color:inkMain() });
@@ -913,12 +766,12 @@ function drawOverlay(){
       kr('아직 내역이 없습니다', W()/2, top + 142, { color:inkMuted() });
       setFn('drawWhoScreen()'); return;
     }
-    fillRect(BORDER + 20, top + 126, W() - (BORDER + 20)*2, 1, TFT.TAB_BG);
+    fillRect(BORDER + 20, top + 126, W() - (BORDER + 20)*2, 1, bgShade(20));
     const ROW = 21, pad = 22;
     overlay.rows.forEach((l, i) => {
       const y = top + 134 + i*ROW + ROW/2;
-      kr(`${Math.abs(l.delta)} ${l.delta > 0 ? '적립' : '사용'}`, BORDER + pad, y,
-         { datum:'ML', color: l.delta > 0 ? TFT.EARN : TFT.SPEND });
+      kr(`${Math.abs(l.delta)} ${l.delta > 0 ? '지급' : '사용'}`, BORDER + pad, y,
+         { datum:'ML', color: inkDir(l.delta > 0) });
       kr(timeAgo(l.at), W() - BORDER - pad, y, { datum:'MR', color:inkMuted() });
     });
     setFn('drawWhoScreen()'); return;
@@ -937,10 +790,9 @@ function drawOverlay(){
 
 function render(){
   if (asleep){ fillRect(0,0,W(),H(),TFT.BLACK); return }
-  drawFrame(); drawHeader(); drawTabs();
+  drawFrame(); drawHeader();
   if (overlay)                drawOverlay();
   else if (tab === 'history') drawHistory();
-  else if (flow === 'person')  drawPerson();
   else if (flow === 'card')    drawWaitCard();
   else if (flow === 'done')    drawDone();
   else                         drawTagScreen();   // 'idle' — 키링을 대주세요
@@ -1039,7 +891,6 @@ function boot(reason){
   asleep = false; busy = false; overlay = null;
   clearTimeout(overlayTimer);
   t0 = Date.now(); elSer.innerHTML = '';
-  if (!tabsAvailable().includes(tab)) tab = tabsAvailable()[0];
   resizeCanvas(); refreshDim(); applyBacklight();
 
   log('=== TalentNfcReader 시작 ===', 'sys');
@@ -1047,8 +898,8 @@ function boot(reason){
   beep('전원 ON');
 
   fillRect(0,0,W(),H(),TFT.BLACK);
-  drawFrame(); drawHeader(); drawTabs();
-  clearContent();                     /* 탭 바탕색(적립·사용은 흰색)을 먼저 깐다 */
+  drawFrame(); drawHeader();
+  clearContent();
   kr('연결 중', W()/2, contentTop() + (H()-contentTop()-BORDER)/2, { color:inkSub() });
   setFn('setup()');
 
@@ -1056,13 +907,13 @@ function boot(reason){
     if (wifiUp){
       log('WiFi 연결됨 192.168.0.42', 'ok');
       roster = new Map(rings.filter(r=>r.name).map(r=>[r.uid, r.name]));
-      log(`[설정] 출처=서버 step=${cfg.talentStep} 잠금=${cfg.modeLock} 슬립=${cfg.sleepEnabled ? '켬' : '끔'}`);
+      log(`[설정] 출처=서버 step=${cfg.talentStep} 슬립=${cfg.sleepEnabled ? '켬' : '끔'}`);
       log(`[이름표] ${roster.size}명 받음 — GET /api/talent/roster`, 'ok');
       log(`[내역] ${feed.length}건 받음 — GET /api/talent/feed?limit=20`, 'ok');
     } else {
       roster = new Map();
       log('WiFi 연결 실패 — 태깅 시 서버 요청이 실패합니다.', 'bad');
-      log(`[설정] 출처=캐시/기본값 step=${cfg.talentStep} 잠금=${cfg.modeLock}`);
+      log(`[설정] 출처=캐시/기본값 step=${cfg.talentStep}`);
     }
     if (nfcReady) log('PN532 준비됨 (v1.6)');
     else          log('PN532 를 찾지 못했습니다 — 배선(SDA=9, SCL=10)과 I2C 모드 스위치를 확인하세요.', 'bad');
@@ -1095,36 +946,27 @@ function onScreenTouch(sx, sy){
   if (asleep){ boot('touch'); return }
   lastActivity = Date.now();
 
-  /* 아래쪽 확인 단추 — 진행 중일 때만 있다 */
-  if (tab !== 'history' && !overlay && (flow === 'person' || flow === 'card')
+  /* 아래쪽 취소 단추 — 진행 중일 때만 있다 */
+  if (tab !== 'history' && !overlay && flow === 'card'
       && sx >= BORDER && sx < W() - BORDER && sy >= btnY() && sy < btnY() + BTN_H){
-    onConfirm();
+    onCancel();
     return;
   }
-  for (const m of menuRects()){
-    if (sx >= m.x && sx < m.x+m.w && sy >= m.y && sy < m.y+m.h){
-      if (m.i !== sel[tab]){
-        sel[tab] = m.i;
-        beep('메뉴 선택');
-        log(`[터치] 메뉴 ${m.item.name} ${m.item.amount}`);
-        miArtWho();
-        render();
-      }
-      return;
-    }
-  }
-  /* 헤더의 내역 버튼을 먼저 본다 */
+  /* 헤더의 내역 버튼 — 다시 누르면 대기 화면으로 돌아온다 */
   const hr = histRect();
   if (sx >= hr.x && sx < hr.x+hr.w && sy >= hr.y && sy < hr.y+hr.h){
-    if (tab !== 'history'){
-      tab = 'history'; overlay = null; clearTimeout(overlayTimer);
-      resetFlow();                     /* 진행 중이던 것을 접는다(기기와 같다) */
+    overlay = null; clearTimeout(overlayTimer);
+    resetFlow();                       /* 진행 중이던 것을 접는다(기기와 같다) */
+    if (tab === 'history'){
+      tab = 'main'; beep('탭 전환'); log('[터치] 대기 화면');
+    } else {
+      tab = 'history';
       /* 열 때는 늘 가장 최근 묶음부터 — 넘겨 둔 쪽에서 시작하면 방금 찍힌 것이
          안 보여 "안 들어갔다" 로 읽힌다 */
       feedPage = 0;
       beep('내역'); log('[터치] 내역');
-      miArtWho(); render();
     }
+    render();
     return;
   }
 
@@ -1139,19 +981,6 @@ function onScreenTouch(sx, sy){
       else return;
       log(`[터치] 내역 ${feedPage + 1}쪽 — GET /api/talent/feed?limit=${feedRows()}&page=${feedPage}`);
       render();
-      return;
-    }
-  }
-  for (const t of tabBtns()){
-    if (sx >= t.x && sx < t.x+t.w && sy >= t.y && sy < t.y+t.h){
-      if (t.key === tab) return;
-      tab = t.key;
-      overlay = null; clearTimeout(overlayTimer);
-      resetFlow();                     /* 지급하려다 사용 탭으로 넘어가는 사고를 막는다 */
-      if (tab === 'history') feedPage = 0;
-      beep('탭 전환');
-      log(`[터치] ${tab === 'earn' ? '적립' : '사용'} 탭`);
-      miArtWho(); render();
       return;
     }
   }
@@ -1173,11 +1002,6 @@ function handleTag(ring){
       beep('실패');
       showOverlay({ kind:'error', reason:'등록되지 않은 카드입니다' });
       log(`[미등록] ${ring.uid} — POST /api/talent/seen`, 'bad');
-      return;
-    }
-    if ((c.side === 'spend') !== (tab === 'spend')){
-      beep('실패');
-      showOverlay({ kind:'error', reason: c.side === 'spend' ? '사용 카드입니다' : '지급 카드입니다' });
       return;
     }
     /* 사용에서 잔액을 넘으면 처리하지 않고 카드 단계에 머문다 — 다른 카드를 대면 된다.
@@ -1226,19 +1050,29 @@ function handleTag(ring){
   }
   lastUid = ring.uid; lastTagMs = now;
 
-  /* 키링이다. 누구인지 보여주고 확인을 기다린다 — 곧바로 처리하지 않는다. */
+  /* 키링이다. 이름·잔액을 보여주며 곧바로 카드를 기다린다 — 확인을 따로 받지 않는다. */
   beep('탭 전환');
   flowWho = { uid: ring.uid, name: roster.get(ring.uid) || ring.uid, bal: ring.bal, ring };
   flowCard = null;
-  flow = 'person';
+  flow = 'card';
   log(`[키링] ${ring.uid}(${flowWho.name}) 잔액 ${ring.bal}`);
   lastActivity = Date.now();
+
+  /* 출석모드는 카드까지 건너뛴다 — 줄이 길 때 키링 한 번으로 끝내려는 것이다 */
+  if (cfg.attendanceMode){
+    const c = cards[0];
+    if (!c){ beep('실패'); showOverlay({ kind:'error', reason:'등록된 카드가 없습니다' }); return; }
+    flowCard = c;
+    commitCard();
+    return;
+  }
+
   render();
   return;
 
 }
 
-/* 확인을 눌렀을 때 실제로 처리한다. 카드가 정해져 있어야 한다. */
+/* 카드가 정해졌을 때 실제로 처리한다. */
 function commitCard(){
   const c = flowCard, ring = flowWho.ring;
   busy = true; renderRings();
@@ -1286,22 +1120,12 @@ function commitCard(){
   }, 620);
 }
 
-/* 아래쪽 확인 단추 — 단계마다 뜻이 다르다 */
-function onConfirm(){
+/* 아래쪽 취소 단추 — 진행 중이던 것을 접고 대기로 돌아간다.
+   (완료 화면에는 단추가 없다 — 시간이 지나면 저절로 돌아간다) */
+function onCancel(){
   lastActivity = Date.now();
-  if (flow === 'done') return;      /* 완료 화면에는 단추가 없다 — 시간이 지나면 저절로 돌아간다 */
-  if (flow === 'person'){
-    /* 출석모드는 여기서 곧바로 처리한다 — 줄이 길 때 태그 한 번으로 끝내려는 것이다 */
-    if (cfg.attendanceMode){
-      const c = cardsFor()[0];
-      if (!c){ beep('실패'); showOverlay({ kind:'error', reason:'등록된 카드가 없습니다' }); return; }
-      flowCard = c;
-      commitCard();
-      return;
-    }
-    beep('탭 전환'); flow = 'card'; render(); return;
-  }
-  if (flow === 'card'){ beep('탭 전환'); resetFlow(); render(); return; }   // '취소'
+  if (flow !== 'card') return;
+  beep('탭 전환'); resetFlow(); render();
 }
 
 /* 딥슬립 카운트다운 — sleepEnabled 가 꺼져 있으면 돌지 않는다 */
@@ -1354,10 +1178,9 @@ document.getElementById('cfStep').onchange = e => {
   log(`[설정] talentStep=${cfg.talentStep}`);
   if (!asleep) render();
 };
-document.getElementById('cfLock').onchange = e => {
-  cfg.modeLock = e.target.value;
-  log(`[설정] modeLock=${cfg.modeLock}`);
-  if (!tabsAvailable().includes(tab)) tab = tabsAvailable()[0];
+document.getElementById('cfBg').oninput = e => {
+  cfg.bgColor = e.target.value.toUpperCase();
+  log(`[설정] bgColor=${cfg.bgColor}`);
   if (!asleep) render();
 };
 document.getElementById('cfRot').onchange = e => {
@@ -1381,40 +1204,7 @@ document.getElementById('cfSleepOn').onchange = e => {
   if (!cfg.sleepEnabled && asleep) boot('touch');
 };
 
-/* ── 메뉴 항목 그림 ──
-   서버가 없으므로 로컬 파일을 그대로 끼운다. 기기에서는 서버가 108px 로 줄이고
-   RGB565 로 바꿔 두지만, 여기서는 그릴 때 크기를 맞추므로 원본을 그대로 쓴다. */
-function miArtWho(){
-  const it = curItem();
-  const el = document.getElementById('miArtWho');
-  if (!it){ el.textContent = '내역 탭에는 메뉴가 없습니다.'; return }
-  el.textContent = `지금 고른 항목: ${tab === 'spend' ? '사용' : '적립'} · ${it.name} (${it.amount}P)`
-                 + (it.img ? ' — 그림 있음' : ' — 그림 없음');
-}
-document.getElementById('btnMiArt').onclick = () => {
-  if (!curItem()){ log('메뉴가 있는 탭에서 항목을 먼저 고르세요.', 'bad'); return }
-  document.getElementById('miArt').click();
-};
-document.getElementById('miArt').onchange = e => {
-  const f = e.target.files && e.target.files[0];
-  e.target.value = '';
-  const it = curItem();
-  if (!f || !it) return;
-  const im = new Image();
-  im.onload = () => { it.img = im; log(`[그림] ${it.name} 에 끼움 (${im.naturalWidth}x${im.naturalHeight})`); miArtWho(); render(); };
-  im.onerror = () => log('그림을 읽지 못했습니다.', 'bad');
-  im.src = URL.createObjectURL(f);
-};
-document.getElementById('btnMiArtClear').onclick = () => {
-  const it = curItem();
-  if (!it || !it.img) return;
-  it.img = null;
-  log(`[그림] ${it.name} 에서 뗌`);
-  miArtWho(); render();
-};
-
 renderRings();
-miArtWho();
 Promise.all([
   document.fonts ? document.fonts.ready : Promise.resolve(),
   ...Object.values(IMG).map(i => new Promise(r => { i.complete ? r() : (i.onload = r, i.onerror = r) })),

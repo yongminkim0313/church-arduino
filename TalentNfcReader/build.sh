@@ -6,9 +6,14 @@
 # 그래서 라이브러리를 건드리지 않고 -D 플래그로 이 스케치에만 설정을 주입한다.
 # (TFT_eSPI 는 USER_SETUP_LOADED 가 정의돼 있으면 자체 설정 파일을 읽지 않는다)
 #
+# 그 플래그는 스케치 폴더의 **build_opt.h** 에 있다 — 이 스크립트와 Arduino IDE 가
+# 같은 파일을 쓴다. IDE 에는 스케치마다 플래그를 주는 칸이 없지만, 아두이노 빌더가
+# build_opt.h 를 컴파일러에 그대로 넘겨 준다(platform.txt 의 build.opt.name).
+#
 #   ./build.sh                     컴파일만
 #   ./build.sh --upload            컴파일 + 업로드 (포트는 아래 PORT 또는 인자로)
 #   UART_LOG=1 ./build.sh --upload 로그를 UART 브리지 포트로 뺀다 (아래 CDCOnBoot 참고)
+#   NO_WIFI=1  ./build.sh --upload 와이파이를 일부러 못 붙게 구워 블루투스 설정 화면을 시험한다
 set -e
 cd "$(dirname "$0")/.."
 
@@ -55,19 +60,15 @@ FQBN="esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,CDCOnBoot=$CDC_ON_BOOT,Partiti
 #   USE_FSPI_PORT(→ SPI_PORT 2 · SPI2)도 성립하지만, 코어의 전역 SPI 객체가
 #   S3 에서 FSPI 를 쓰므로 같은 버스를 두 객체가 잡는 일을 피해 HSPI 로 둔다.
 #   PN532 는 I2C(16/17)라 SPI 버스를 다투지 않는다.
-FLAGS="-DUSER_SETUP_LOADED=1 \
--DILI9341_DRIVER=1 \
--DTFT_WIDTH=240 -DTFT_HEIGHT=320 \
--DTFT_MISO=6 -DTFT_MOSI=16 -DTFT_SCLK=15 \
--DTFT_CS=8 -DTFT_DC=17 -DTFT_RST=18 \
--DTOUCH_CS=5 \
--DUSE_HSPI_PORT=1 \
--DLOAD_GLCD=1 -DLOAD_FONT2=1 -DLOAD_FONT4=1 -DLOAD_FONT6=1 -DLOAD_FONT7=1 -DLOAD_FONT8=1 -DLOAD_GFXFF=1 \
--DSMOOTH_FONT=1 \
--DSPI_FREQUENCY=40000000 \
--DSPI_READ_FREQUENCY=20000000"
+# 핀·드라이버 설정은 스케치 폴더의 build_opt.h 한 곳에 있다.
+# 아두이노 빌더가 그 파일을 컴파일러 플래그로 그대로 넘기므로(platform.txt 의
+# build.opt.name), 여기서 --build-property 로 또 넘기지 않는다 —
+# Arduino IDE 로 구울 때도 같은 설정이 그대로 먹으라고 그 파일로 옮겼다.
 
-ARGS=(--fqbn "$FQBN" --build-property "compiler.cpp.extra_flags=$FLAGS" TalentNfcReader)
+ARGS=(--fqbn "$FQBN" TalentNfcReader)
+# 시험용 — 알고 있는 인증정보를 모두 건너뛰고 블루투스 설정 화면으로 들어간다.
+# 핀 설정(build_opt.h)은 빌더가 따로 붙여 주므로 여기서 덮어써도 살아남는다.
+[ -n "$NO_WIFI" ] && ARGS+=(--build-property "compiler.cpp.extra_flags=-DFORCE_WIFI_SETUP=1")
 [ "$1" = "--upload" ] && ARGS+=(--upload -p "$PORT")
 
 echo "▶ FQBN: $FQBN"
