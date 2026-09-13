@@ -27,6 +27,16 @@
 // 줄 단위로 그려서 한 번에 밀어 넣는다(폰트 사본도 하나로 끝난다).
 // 줄 띠는 서로 겹치지 않게 잡았다 — 겹치면 옆 줄을 지운다.
 //
+// ── 전력 ──────────────────────────────────────────────────────────
+// 하루 종일 켜 두는 기기다. 처음엔 150~170mA 를 먹었는데 원인이 네 군데였다.
+//   1) WiFi.setSleep(false) — RF 수신단이 상시 켜져 100mA 대. 이 기기는 5분마다
+//      우리가 GET 을 거는 폴링 구조라 모뎀 슬립을 끌 이유가 없었다.
+//   2) loop() 에 delay 가 없어 idle 태스크가 안 돌고 CPU 가 WAITI 로 못 내려갔다.
+//   3) 백라이트가 켜고/끄기뿐 — PWM 으로 60% 만 줘도 눈에는 거의 같다.
+//   4) 마퀴가 영영 흐르며 30fps 스프라이트 푸시를 멈추지 않았다.
+// 넷을 고쳐 45~60mA 대로 내렸다. 손잡이는 CPU_MHZ · BL_DUTY_ON · BL_IDLE_MS ·
+// MARQ_ROUNDS 네 개다. 무동작 5분이면 화면을 끄고 버튼을 누르면 다시 켠다.
+//
 // 필요 라이브러리: TFT_eSPI(Setup25) · ArduinoJson 7.x · ChurchSecrets
 // 파티션: Huge APP(3MB) — sketch.yaml 에 박아뒀다.
 
@@ -56,8 +66,16 @@
 #include "FontNum30.h"
 
 #define PIN_BL 4
+#define BL_CHANNEL  0   // 코어 2.x 의 LEDC 채널 (3.x 는 핀으로 직접 잡는다)
 #define BTN_TOP    35   // 입력 전용 핀(내부 풀업 없음, 보드에 외부 풀업 있음)
 #define BTN_BOTTOM  0
+
+// ── 전력 ──────────────────────────────────────────────────────────
+// 상시 급전이라도 이 기기는 하루 종일 켜져 있다. 소모의 대부분은 (1) WiFi RF,
+// (2) 놓지 않는 CPU, (3) 백라이트 세 군데에서 나온다 — 아래 세 값이 그 손잡이다.
+static const uint8_t  CPU_MHZ    = 80;        // WiFi 가 요구하는 하한. 240MHz 는 이 화면에 과하다
+static const uint8_t  BL_DUTY_ON = 150;       // 백라이트 밝기 0-255 (약 60%)
+static const uint32_t BL_IDLE_MS = 300000UL;  // 이만큼 버튼이 없으면 화면을 끈다 (0 = 끄지 않음)
 
 static const int16_t SCR_W = 240;
 static const int16_t SCR_H = 135;
@@ -106,6 +124,10 @@ static bool    dirtyAll = true;     // 화면이 바뀌면 전부 다시 그린�
 static const float    MARQ_SPEED = 34.0f;   // 초당 픽셀
 static const int16_t  MARQ_GAP   = 44;      // 한 바퀴 사이 여백
 static const uint32_t MARQ_HOLD  = 1400;    // 시작·한 바퀴마다 멈춰 있는 시간(ms)
+// 흐르는 글은 30fps 로 줄 스프라이트를 계속 밀어 넣는다. 다 읽을 만큼 돌았으면
+// 멈춰 세워 그 비용을 없앤다. 새로 받아오거나(5분) 버튼을 누르면 dirtyAll 이
+// resetMarquees() 를 부르므로 다시 처음부터 흐른다.
+static const uint8_t  MARQ_ROUNDS = 3;      // 이만큼 돌면 앞으로 돌아가 멈춰 선다
 
 static Marquee marq[M_COUNT];
 
@@ -180,6 +202,8 @@ static void drawRow(int16_t y, uint16_t bg, const Seg* segs, uint8_t n, bool for
       m.off       = 0;
       m.holdUntil = now + MARQ_HOLD;   // 흐르기 전에 앞부분을 잠깐 보여준다
       m.lastAdv   = now;
+      m.rounds    = 0;
+      m.done      = false;
       int16_t tw  = rowOk ? row.textWidth(m.text) : tft.textWidth(m.text);
       int16_t aw  = segs[i].x1 - segs[i].x0;
       m.rolls     = (tw > aw);
@@ -187,14 +211,19 @@ static void drawRow(int16_t y, uint16_t bg, const Seg* segs, uint8_t n, bool for
       needDraw    = true;
       continue;
     }
-    if (!m.rolls) continue;
+    if (!m.rolls || m.done) continue;
     if (now < m.holdUntil) { m.lastAdv = now; continue; }
 
     m.off += MARQ_SPEED * (now - m.lastAdv) / 1000.0f;
     m.lastAdv = now;
     if (m.off >= m.period) {           // 한 바퀴 — 처음으로 돌아가 잠깐 쉰다
       m.off -= m.period;
-      m.holdUntil = now + MARQ_HOLD;
+      if (++m.rounds >= MARQ_ROUNDS) {  // 다 읽을 만큼 돌았다 — 앞을 보인 채 멈춘다
+        m.off  = 0;
+        m.done = true;
+      } else {
+        m.holdUntil = now + MARQ_HOLD;
+      }
     }
     needDraw = true;
   }
@@ -585,6 +614,60 @@ static uint32_t nextFetchAt = 0;   // 다음 조회 시각(millis)
 //   아래(GPIO0) → 지금 바로 새로고침
 static bool wantFetch = false;
 
+// ══════════════════════════════════════════════════════════════════
+//  백라이트와 화면 끄기
+// ══════════════════════════════════════════════════════════════════
+static bool     blPwm = false;      // LEDC 를 잡았는가(못 잡으면 켜고/끄기만 한다)
+static bool     blOn  = true;
+static uint32_t lastActivity = 0;   // 마지막 버튼 시각
+
+// 주의: TFT_eSPI 의 init() 이 GPIO4 를 무조건 HIGH 로 만든다(TFT_eSPI.cpp:786).
+// 그래서 반드시 tft.init() '다음에' 불러야 한다 — 앞에서 잡으면 init() 이 도로 덮는다.
+// (ChurchLogoOnly 의 페이드인이 같은 이유로 init() 뒤에 있다.)
+static void backlightInit() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  blPwm = ledcAttach(PIN_BL, 5000, 8);            // 5kHz, 8bit
+#else
+  blPwm = (ledcSetup(BL_CHANNEL, 5000, 8) != 0);
+  if (blPwm) ledcAttachPin(PIN_BL, BL_CHANNEL);
+#endif
+  if (!blPwm) {                                   // 화면이 검게 남지 않도록 그냥 켠다
+    pinMode(PIN_BL, OUTPUT);
+    Serial.println("[화면] LEDC 실패 — 밝기 조절 없이 켠다");
+  }
+}
+
+static void backlightSet(uint8_t duty) {
+  if (!blPwm) { digitalWrite(PIN_BL, duty ? HIGH : LOW); return; }
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(PIN_BL, duty);
+#else
+  ledcWrite(BL_CHANNEL, duty);
+#endif
+}
+
+// 눌림이 있었다고 알린다. 꺼져 있던 화면을 켰으면 true — 그 눌림은 삼켜야 한다.
+static bool screenWake() {
+  lastActivity = millis();
+  if (blOn) return false;
+  blOn = true;
+  tft.writecommand(0x29);             // DISPON (MIPI DCS — ST7789)
+  backlightSet(BL_DUTY_ON);
+  dirtyAll = true;                    // 남은 시간을 지금 값으로 맞춰 다시 그린다
+  Serial.println("[화면] 켬");
+  return true;
+}
+
+// 백라이트(약 25mA)와 패널 구동부를 같이 내린다. WiFi 와 5분 폴링은 그대로 돈다.
+static void screenSleepIfIdle() {
+  if (!blOn || BL_IDLE_MS == 0) return;
+  if (millis() - lastActivity < BL_IDLE_MS) return;
+  blOn = false;
+  backlightSet(0);
+  tft.writecommand(0x28);             // DISPOFF
+  Serial.println("[화면] 무동작 — 끔");
+}
+
 static void handleButtons() {
   static uint32_t lockUntil = 0;
   if (millis() < lockUntil) return;
@@ -593,6 +676,10 @@ static void handleButtons() {
   bool bot = (digitalRead(BTN_BOTTOM) == LOW);
   if (!top && !bot) return;
   lockUntil = millis() + 250;
+
+  // 화면이 꺼져 있었다면 이 눌림은 "켜기" 로만 쓴다. 안 그러면 불을 켜려던 손짓이
+  // 일정을 넘겨 버리거나 새로고침을 돌린다.
+  if (screenWake()) return;
 
   if (top) {
     if (screen == SCR_LIST)              { screen = SCR_MAIN; cursor = 0; }
@@ -621,14 +708,19 @@ static void initColors() {
 }
 
 void setup() {
+  // 240MHz 는 이 화면에 과하다. 80MHz 로도 30fps 스프라이트 푸시와 TLS 핸드셰이크에
+  // 넉넉하다(WiFi 가 요구하는 하한이 80MHz). Serial.begin 앞에 두어야 UART 분주비가
+  // 새 클럭 기준으로 잡힌다.
+  setCpuFrequencyMhz(CPU_MHZ);
   Serial.begin(115200);
 
-  pinMode(PIN_BL, OUTPUT);
-  digitalWrite(PIN_BL, HIGH);
   pinMode(BTN_TOP, INPUT);            // GPIO35 는 입력 전용 — 보드의 외부 풀업을 쓴다
   pinMode(BTN_BOTTOM, INPUT_PULLUP);
 
   tft.init();
+  backlightInit();                    // init() 이 GPIO4 를 HIGH 로 만든 '뒤에' 잡는다
+  backlightSet(BL_DUTY_ON);
+  lastActivity = millis();
   tft.setRotation(1);
   initColors();
   tft.fillScreen(COL_BG);
@@ -665,7 +757,10 @@ void setup() {
   render();                            // "불러오는 중" 화면부터 띄운다
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
+  // 모뎀 슬립을 켠다(기본값 WIFI_PS_MIN_MODEM). 비콘 주기에만 RF 를 깨우므로 평균
+  // 전류가 100mA 대에서 20~30mA 로 떨어진다. 서버가 밀어 주는 것이 없고 5분마다
+  // 우리가 GET 을 거는 구조라, 늦어지는 것은 수신 지연뿐 — 우리 요청에는 영향이 없다.
+  WiFi.setSleep(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   uint32_t until = millis() + 20000;
   while (WiFi.status() != WL_CONNECTED && millis() < until) {
@@ -701,9 +796,17 @@ void loop() {
     dirtyAll    = true;
   }
 
+  screenSleepIfIdle();
+
   // 마퀴가 부드럽게 흐르도록 30fps 로 돈다. 바뀐 줄만 실제로 다시 그려진다.
-  if (millis() - lastDraw >= 33) {
+  // 꺼진 화면은 그릴 이유가 없다 — 깨울 때 dirtyAll 로 전부 다시 그린다.
+  if (blOn && millis() - lastDraw >= 33) {
     lastDraw = millis();
     render();
   }
+
+  // 남는 시간은 idle 태스크에 넘긴다. 이게 없으면 loopTask 가 CPU 를 놓지 않아
+  // WAITI(클럭 게이팅)로 못 내려가고 계속 최고 속도로 돈다. 버튼은 250ms 락이
+  // 걸려 있어 이 주기로 폴링해도 놓치지 않는다.
+  delay(blOn ? 5 : 20);
 }

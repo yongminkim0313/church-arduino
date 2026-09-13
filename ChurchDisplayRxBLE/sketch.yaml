@@ -1,4 +1,4 @@
 # 한글 전체 폰트(1.82MB) 때문에 기본 파티션(1.31MB APP)으로는 안 들어간다.
 # BLE 판은 WiFi 스택이 빠지고 NimBLE 가 가벼워 WiFi 판보다 여유가 크다.
 default_fqbn: esp32:esp32:esp32:PartitionScheme=huge_app
-default_port: /dev/cu.usbserial-5B34014705
+default_port: /dev/cu.usbserial-5B340147051

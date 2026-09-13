@@ -40,6 +40,8 @@ struct Marquee {
   uint32_t holdUntil;             // 이 시각까지는 멈춰 있는다
   uint32_t lastAdv;               // 마지막으로 민 시각(프레임 간격을 재려고)
   bool     rolls;                 // 넘쳐서 흘러야 하는 줄인가
+  uint8_t  rounds;                // 지금까지 돈 바퀴 수
+  bool     done;                  // 다 돌아서 멈춰 섰는가 — 더는 다시 그리지 않는다
 };
 
 // 마퀴 상태 번호. 줄마다·덩이마다 따로 흐르게 하려고 나눠 둔다.
