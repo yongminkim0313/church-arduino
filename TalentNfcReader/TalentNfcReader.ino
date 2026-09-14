@@ -475,6 +475,8 @@ static void wifiForgetCreds() {
   Serial.println("[와이파이] 저장해 둔 설정을 지웠습니다");
 }
 
+static void ledUpdate(uint32_t now);   // 상태 LED(아래 '상태 LED' 절) — 붙기를 기다리는 동안 노랑을 깜빡인다
+
 // 한 번 붙어 본다. 실패해도 라디오는 켜 둔 채로 둔다 — 곧 다른 값으로 다시 시도한다.
 static bool wifiTry(const char* ssid, const char* pass, uint32_t waitMs) {
   if (!ssid || !ssid[0]) return false;
@@ -482,7 +484,11 @@ static bool wifiTry(const char* ssid, const char* pass, uint32_t waitMs) {
   WiFi.disconnect();
   WiFi.begin(ssid, pass);
   const uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < waitMs) delay(200);
+  // 기다리는 동안 loop 가 돌지 않아 LED 가 멈춘다 — 짧게 끊어 기다리며 여기서 노랑을 깜빡인다
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < waitMs) {
+    ledUpdate(millis());
+    delay(50);
+  }
   return WiFi.status() == WL_CONNECTED;
 }
 
@@ -796,11 +802,85 @@ static void beep(uint16_t freq, uint16_t ms) {
   delay(BUZ_GAP);
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  상태 LED — 보드에 달린 RGB LED(WS2812)
+// ══════════════════════════════════════════════════════════════════
+// 화면을 보지 않아도 리더가 지금 어떤지 알게 한다 — 줄 선 뒤쪽이나 옆에서도 보인다.
+//   빨강  오류 — 실패음이 나는 모든 자리(sndFail). LED_FAIL_MS 동안
+//   초록  키링을 알아봤다 — 카드 대기·완료 화면(step 이 대기가 아닐 때), 내역에서 잔액 조회
+//   노랑  연결 중 — 와이파이에 안 붙어 있다(부팅 때 붙는 중, 블루투스 설정 대기, 끊겨서 다시 붙는 중).
+//         빠르게 깜빡인다(0.3초) — 파랑과 한눈에 갈리게. 이때는 태깅해도 서버에 못 묻는다
+//   파랑  평소 대기 — 천천히 깜빡인다(1초 켜짐 · 1초 꺼짐). 살아 있다는 표시다
+// 겹치면 위에서부터 이긴다: 붙잡은 색(빨강·내역 초록) → 키링 초록 → 연결 중 노랑 → 대기 파랑.
+//
+// 핀: 코어의 esp32s3 변형(pins_arduino.h)이 RGB_BUILTIN 을 GPIO48 로 둔다 — ESP32-S3-DevKitC-1 **v1.0**
+// 의 자리다. **v1.1** 보드는 LED 가 GPIO38 로 옮겨졌으니 build_opt.h 에 -DSTATUS_LED_PIN=38 을 넣는다.
+// 48·38 모두 이 스케치의 다른 핀, N16R8 의 PSRAM(35~37), USB(19·20)와 겹치지 않는다.
+// RGB_BUILTIN 도 STATUS_LED_PIN 도 없으면 LED 코드는 아무 일도 하지 않는다.
+#if !defined(STATUS_LED_PIN) && defined(RGB_BUILTIN)
+#define STATUS_LED_PIN RGB_BUILTIN
+#endif
+
+#define LED_FAIL_MS   3000     // 오류 빨강을 두는 시간 — 오류 화면(OVERLAY_MS)과 같게
+#define LED_WHO_MS    5000     // 내역에서 잔액을 조회했을 때 초록을 두는 시간 — WHO_OVERLAY_MS 와 같게
+#define LED_BLINK_MS  1000     // 대기 파랑의 반 주기(켜짐 1초 · 꺼짐 1초)
+#define LED_CONN_MS    300     // 연결 중 노랑의 반 주기 — 파랑보다 빠르게
+#define LED_LEVEL     24       // 밝기(0~255). 보드 LED 는 바로 보면 눈부셔서 낮게 둔다
+
+static uint32_t ledRgb(uint8_t r, uint8_t g, uint8_t b) { return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b; }
+#define LED_OFF    0UL
+#define LED_RED    ledRgb(LED_LEVEL, 0, 0)
+#define LED_GREEN  ledRgb(0, LED_LEVEL, 0)
+#define LED_BLUE   ledRgb(0, 0, LED_LEVEL)
+// 노랑은 빨강·초록을 섞는다. WS2812 의 초록이 눈에 더 밝게 보여 초록을 조금 낮춰야 주황이 아닌 노랑이 된다
+#define LED_YELLOW ledRgb(LED_LEVEL, LED_LEVEL * 3 / 4, 0)
+
+static uint32_t ledShown     = 0xFFFFFFFFUL;   // 마지막으로 쓴 색 — 같으면 다시 쓰지 않는다
+static uint32_t ledHoldRgb   = LED_OFF;        // 잠시 붙잡아 둘 색(오류 빨강 등)
+static uint32_t ledHoldAt    = 0;
+static uint32_t ledHoldMs    = 0;              // 0 이면 붙잡은 것이 없다
+
+// rgbLedWrite 는 RMT 로 한 번 쓰는 데 1ms 남짓 걸린다 — loop 마다 쓰지 않고 색이 바뀔 때만 쓴다.
+static void ledWrite(uint32_t rgb) {
+#ifdef STATUS_LED_PIN
+  if (rgb == ledShown) return;
+  ledShown = rgb;
+  rgbLedWrite(STATUS_LED_PIN, (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+#else
+  (void)rgb;
+#endif
+}
+
+// 지금 상태에 맞는 색. loop 가 매번 부른다.
+// 시각은 "지난 시간" 으로 비교한다 — millis() 는 49일마다 0 으로 돌아가서, "이 시각까지" 로 두면
+// 상시 전원 기기에서 그 순간 빨강이 49일 동안 남는다.
+static void ledUpdate(uint32_t now) {
+  if (ledHoldMs && now - ledHoldAt < ledHoldMs) { ledWrite(ledHoldRgb); return; }
+  ledHoldMs = 0;
+  if (step != STEP_IDLE) { ledWrite(LED_GREEN); return; }        // 키링을 알아봤다(카드 대기·완료)
+  if (WiFi.status() != WL_CONNECTED) {                           // 연결 중 — 빠르게 노랑 깜빡임
+    ledWrite((now / LED_CONN_MS) % 2 == 0 ? LED_YELLOW : LED_OFF);
+    return;
+  }
+  ledWrite((now / LED_BLINK_MS) % 2 == 0 ? LED_BLUE : LED_OFF);  // 대기 — 천천히 깜빡임
+}
+
+// 잠시 한 색으로 붙잡는다. 그 자리에서 곧바로 켠다 — loop 로 돌아갈 때까지 기다리면
+// 실패음(0.4초)이 끝난 뒤에야 빨강이 뜬다.
+static void ledHold(uint32_t rgb, uint32_t ms) {
+  ledHoldRgb = rgb;
+  ledHoldAt = millis();
+  ledHoldMs = ms;
+  ledWrite(rgb);
+}
+
 static void sndPowerOn()  { beep(BUZ_1, 80);  beep(BUZ_2, 80);  beep(BUZ_3, 120); } // 올라가며 켜짐
 static void sndPowerOff() { beep(BUZ_3, 80);  beep(BUZ_2, 80);  beep(BUZ_1, 140); } // 내려가며 꺼짐
 static void sndEarn()     { beep(BUZ_2, 70);  beep(BUZ_3, 130); }                   // 짧게 오르는 두 음
 static void sndSpend()    { beep(BUZ_3, 70);  beep(BUZ_1, 130); }                   // 짧게 내리는 두 음
-static void sndFail()     { beep(BUZ_LOW, 120); beep(BUZ_LOW, 220); }               // 낮은 두 번 — 뭔가 잘못됐다
+// 낮은 두 번 — 뭔가 잘못됐다. 실패를 알리는 모든 자리가 이것을 부르므로 **오류 빨강도 여기서** 켠다
+// (자리마다 따로 켜면 한 군데씩 빠뜨린다). 무음으로 설정한 기기에서도 LED 는 켠다.
+static void sndFail()     { ledHold(LED_RED, LED_FAIL_MS); beep(BUZ_LOW, 120); beep(BUZ_LOW, 220); }
 static void sndMode()     { beep(BUZ_2, 45); }                                      // 탭 전환 짧은 한 음
 
 // ══════════════════════════════════════════════════════════════════
@@ -2238,6 +2318,7 @@ static void goToDeepSleep() {
 
   sndPowerOff();          // beep() 안에서 재생 시간을 기다리므로 잘리지 않는다
   backlight(false);
+  ledWrite(LED_OFF);      // WS2812 는 칩이 잠들어도 마지막 색을 들고 있다 — 끄고 잔다
   tft.writecommand(0x10); // ILI9341 sleep in
 
   // 정전식 패드를 걷어냈으므로 touchSleepWakeUpEnable 로는 깨울 수 없다.
@@ -2505,6 +2586,9 @@ static bool provisionMode() {
   uint32_t lastTouch = 0;
 
   while (millis() - t0 < PROV_TIMEOUT_MS) {
+    // 이 화면에서는 loop 가 돌지 않는다 — 여기서 LED 를 갱신한다(처음 3초는 실패 빨강, 그 뒤 연결 중 노랑)
+    ledUpdate(millis());
+
     // ── 휴대폰이 보낸 것 ──
     if (provWantForget) {
       provWantForget = false;
@@ -2706,6 +2790,8 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
   if (tab == TAB_HISTORY) {
     drawWorking();
     if (whoFetch(s)) {
+      // 내역 화면은 대기 단계 그대로라(step) 초록이 저절로 켜지지 않는다 — 조회 화면을 띄우는 동안만 켠다
+      ledHold(LED_GREEN, LED_WHO_MS);
       sndMode();
       drawWhoScreen();
       overlayUntil = millis() + WHO_OVERLAY_MS;
@@ -2820,6 +2906,9 @@ void setup() {
   pinMode(PIN_TFT_BL, OUTPUT);
   analogWrite(PIN_TFT_BL, 0);
   pinMode(PIN_TOUCH_IRQ, INPUT_PULLUP);   // 딥슬립 기상용(ext0). 평소에는 폴링만 쓴다.
+  // 상태 LED 를 먼저 끈다 — WS2812 는 리셋돼도 전원이 붙어 있는 한 이전 색을 들고 있어,
+  // 켜지는 동안 옛 빨강이 남아 오류로 읽힌다. 이후 색은 loop 의 ledUpdate 가 정한다.
+  ledWrite(LED_OFF);
 
   // 서버에서 받은 포인트 그림을 담아 두는 곳. 못 열어도 계속 간다 —
   // 그때는 펌웨어에 구워 넣은 그림으로 돈다.
@@ -2878,6 +2967,7 @@ void setup() {
   }
 
   wifiLoadSaved();
+  ledUpdate(millis());                 // 연결 중 노랑을 곧바로 켠다(이어서 wifiTry 가 깜빡인다)
   if (!wifiConnectKnown(8000)) {
     // 알고 있는 것으로는 못 붙었다. 블루투스를 열고 휴대폰에서 넣어 줄 때까지 기다린다.
     Serial.println("WiFi 연결 실패 — 블루투스 설정 모드로 들어갑니다.");
@@ -2914,6 +3004,9 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+
+  // ── 상태 LED ── 오류 빨강 · 키링 초록 · 대기 파랑 깜빡임(색이 바뀔 때만 쓴다)
+  ledUpdate(now);
 
   // ── 화면 터치: 탭 전환 ──
   // 정전식 패드 대신 디스플레이의 XPT2046 을 읽는다. getTouch() 는 눌린 동안
