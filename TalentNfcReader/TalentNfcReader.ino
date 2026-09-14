@@ -332,9 +332,13 @@ static uint16_t    rosterCount = 0;
 // 바뀌어 새로 받고, 옛 파일은 artPrune 이 지운다.
 //
 // 한꺼번에 받지 않는다. 오십 명이면 수십 초가 걸리고 그동안 태깅이 굳는다. 대기 화면에서
-// 조용할 때 한 장씩 받는다(photoSyncStep) — 한 장이 48x48x2 = 4.6KB 라 금방이다.
-// 아직 못 받은 아이는 사진 없이 이름만 뜬다(예전 모양 그대로).
-#define PHOTO_PX 48               // 서버(talentPhoto.DEVICE_PX)와 같아야 한다 — 파일 이름에도 들어간다
+// 조용할 때 한 장씩 받는다(photoSyncStep) — 한 장이 208x208x2 = 86KB, 오십 명이면 4.3MB 로 LittleFS(11.8MB)에 들어간다.
+// 아직 못 받은 아이는 사진 없이 이름만 뜬다(글자만 있는 모양).
+//
+// 208 은 화면 내용 폭(232)보다 조금 작게 잡은 크기다. 키링을 대면 사진을 크게 띄우고 이름·잔액을
+// 그 위에 겹친다(drawWaitCard). 서버는 이름표를 받을 때 ?px=208 이라야 이 크기의 이름을 준다 —
+// 없으면 옛 펌웨어용 48px 이름을 준다.
+#define PHOTO_PX 208              // 서버(talentPhoto.DEVICE_SIZES)에 있는 크기라야 한다 — 파일 이름에도 들어간다
 static uint16_t photoCursor = 0;  // 다음에 확인할 이름표 자리
 static uint32_t photoNextMs = 0;  // 다음 한 장을 받아도 되는 시각
 // 이번에 이름표를 제대로 받았는가. 못 받았으면(부팅 때 서버가 꺼져 있었다든지) 이름표가 비어
@@ -1250,7 +1254,9 @@ static bool rosterFetch() {
   filter["data"][0]["img"]  = true;     // 사진 파일 이름(없으면 칸이 없다 — 옛 서버도 마찬가지)
 
   JsonDocument doc;
-  if (!getJson("/roster", doc, DeserializationOption::Filter(filter))) return false;
+  char q[24];
+  snprintf(q, sizeof(q), "/roster?px=%d", PHOTO_PX);    // 사진 파일 이름의 크기를 고른다(서버 talentPhoto)
+  if (!getJson(q, doc, DeserializationOption::Filter(filter))) return false;
 
   rosterCount = 0;
   uint16_t withPhoto = 0;
@@ -2252,42 +2258,86 @@ static void drawWaitList(int top) {
   useFont(0);
 }
 
+// ── 큰 사진 모양 ──
+// 사진을 받아 둔 아이는 사진을 화면 폭보다 조금 작게(208) 크게 띄우고, 이름은 사진 윗부분에,
+// '카드를 대주세요'·잔액은 아랫부분에 짙은 띠로 겹친다. 내용 높이(218)가 사진으로 차서 카드 목록은 싣지 않는다 —
+// 어떤 카드를 댈지는 손에 든 카드가 말하고, 잔액이 모자라면 카드를 댈 때 알려 준다.
+// 띠는 불투명이라 잔액이 오면 아래 띠만 다시 칠하면 된다(사진을 다시 그리지 않는다).
+// 화면을 가로로 돌린 기기처럼 사진이 들어갈 높이가 안 되면 글자만 있는 모양으로 간다.
+static bool waitBig = false;
+static const int      BIG_BAND_H = 30;
+static const uint16_t BIG_BAND   = 0x2104;   // 짙은 회색 — 어떤 사진 위에서도 흰 글자가 읽힌다
+
+static int bigX() { return (tft.width() - PHOTO_PX) / 2; }
+static int bigY() { return contentTop() + (bodyH() - PHOTO_PX) / 2; }
+static bool bigFits() { return PHOTO_PX <= tft.width() - BORDER * 2 && PHOTO_PX <= bodyH(); }
+
+static void drawBigTop() {
+  const int x = bigX() + 8, y = bigY() + 8, w = PHOTO_PX - 16;
+  tft.fillRoundRect(x, y, w, BIG_BAND_H, 8, BIG_BAND);
+  useFont(20);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, BIG_BAND);
+  tft.drawString(curName[0] ? curName : curUid, bigX() + PHOTO_PX / 2, y + BIG_BAND_H / 2);
+  useFont(0);
+}
+
+static void drawBigBottom() {
+  const int x = bigX() + 8, w = PHOTO_PX - 16;
+  const int y = bigY() + PHOTO_PX - 8 - BIG_BAND_H, cy = y + BIG_BAND_H / 2;
+  tft.fillRoundRect(x, y, w, BIG_BAND_H, 8, BIG_BAND);
+
+  useFont(14);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(0xC618, BIG_BAND);            // 옅은 회색 — 안내는 잔액보다 한 단계 물린다
+  tft.drawString("카드를 대주세요", x + 10, cy);
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(TFT_WHITE, BIG_BAND);
+  tft.drawString("P", x + w - 10, cy + 2);
+  const int pW = tft.textWidth("P");
+  useFont(0);
+
+  char b[12];
+  if (curBalanceKnown) snprintf(b, sizeof(b), "%ld", (long)curBalance);
+  else                 strlcpy(b, "...", sizeof(b));     // 받는 중 — 0 으로 보이면 잔액이 없는 줄 안다
+  tft.setTextColor(curBalanceKnown ? TFT_WHITE : 0x8410, BIG_BAND);
+  tft.drawString(b, x + w - 12 - pW, cy + 1, 4);
+}
+
 static void drawWaitCard() {
   clearContent();
   const int top = contentTop();
   const int pad = WAIT_PAD;
 
-  // 아이 사진 — 미리 받아 둔 것이 있으면 이름 왼쪽에 48px 동그라미로(서버가 동그랗게 잘라
-  // 바깥을 비침색으로 채워 보낸다 — 배경 사진 위에서도 네모가 남지 않는다).
-  // 사진이 있으면 이름과 "카드를 대주세요" 를 사진 오른쪽에 붙인다. 사진은 구분선(top+58) 위에서
-  // 끝나므로 카드 목록 자리는 그대로다. 사진이 없거나 아직 못 받았으면 예전 모양 그대로 둔다.
+  waitBig = false;
   const char* img = photoOf(curUid);
-  bool hasPhoto = false;
-  if (img) {
+  if (img && bigFits()) {
     ArtFile a;
     a.base = 0;
     strlcpy(a.file, img, sizeof(a.file));
     a.w = PHOTO_PX; a.h = PHOTO_PX;
-    hasPhoto = drawArtFile(a, BORDER + pad - 6, top + 4, true);   // 파일이 없으면 false
+    if (drawArtFile(a, bigX(), bigY(), true)) {  // 파일이 없거나 덜 받았으면 false
+      waitBig = true;
+      drawBigTop();
+      drawBigBottom();
+      drawBigButton("취소", C_NEUTRAL);
+      return;
+    }
+    clearContent();                                // 그리다 멈췄으면 반쪽 사진을 지우고 글자 모양으로
   }
-  waitHasPhoto = hasPhoto;
-  waitNameX = hasPhoto ? BORDER + pad - 6 + PHOTO_PX + 10 : BORDER + pad;
-  const int nameX = waitNameX;
 
+  // ── 글자만 있는 모양(사진이 없거나 아직 못 받았을 때) ──
   // 이름은 왼쪽, 잔액은 오른쪽으로 한 줄에 묶었다. 카드 목록에 자리를 내주려고
   // 잔액을 48px 에서 26px(내장 4번 폰트)로 줄였다 — 여기서 크게 볼 것은 카드다.
+  waitHasPhoto = false;
+  waitNameX = BORDER + pad;
   drawWaitName(top);
   drawWaitBalance(top);
 
   useFont(14);
   contentText(inkSub());
-  if (hasPhoto) {                      // 사진이 왼쪽을 차지하므로 가운데가 아니라 이름 밑에 붙인다
-    tft.setTextDatum(ML_DATUM);
-    tft.drawString("카드를 대주세요", nameX, top + 42);
-  } else {
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("카드를 대주세요", tft.width() / 2, top + 44);
-  }
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("카드를 대주세요", tft.width() / 2, top + 44);
   useFont(0);
 
   tft.fillRect(BORDER + 20, top + 58, tft.width() - (BORDER + 20) * 2, 1,
@@ -2300,6 +2350,7 @@ static void drawWaitCard() {
 // 잔액을 받은 뒤 — 잔액 자리와 카드 목록만 바탕으로 되돌리고 다시 그린다(사진·이름·안내는 그대로).
 // 이름이 길어 잔액 자리까지 닿았을 수 있어 이름도 한 번 더 얹는다(같은 자리에 같은 글자라 티가 나지 않는다).
 static void drawWaitRefresh() {
+  if (waitBig) { drawBigBottom(); return; }        // 큰 사진 모양 — 아래 띠(잔액)만 고친다
   const int top = contentTop();
   restoreContent(tft.width() - BORDER - WAIT_PAD - WAIT_BAL_W, top + 2, WAIT_BAL_W, 28);
   drawWaitName(top);
