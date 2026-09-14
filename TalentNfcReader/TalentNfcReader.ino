@@ -245,6 +245,9 @@ static uint32_t stepAt       = 0;    // 이 단계에 들어온 시각(자동 �
 static char     curUid[24]   = "";
 static char     curName[24]  = "";
 static int32_t  curBalance   = 0;
+// 잔액을 서버에서 받았나. 이름표에 있는 키링은 이름·사진을 먼저 띄우고 잔액은 곧이어 채운다(handleTag).
+// 받기 전에는 잔액 자리에 '…' 를 두고, 모자람 흐림도 하지 않는다.
+static bool     curBalanceKnown = true;
 static int8_t   curCard      = -1;   // cards[] 의 자리. -1 이면 아직 안 골랐다
 static int32_t  doneDelta    = 0;    // 완료 화면에 띄울 값
 static int32_t  doneBalance  = 0;
@@ -368,6 +371,13 @@ static const char* nameOf(const char* uid) {
   for (uint16_t i = 0; i < rosterCount; i++)
     if (!strcmp(roster[i].uid, uid)) return roster[i].name;
   return uid;
+}
+
+// 이름표에 있는 키링인가 — 있으면 서버 응답을 기다리지 않고 이름부터 띄운다(handleTag)
+static bool rosterHas(const char* uid) {
+  for (uint16_t i = 0; i < rosterCount; i++)
+    if (!strcmp(roster[i].uid, uid)) return true;
+  return false;
 }
 
 // UID 의 사진 파일 이름. 이름표에 없거나 사진이 없으면 nullptr.
@@ -563,25 +573,105 @@ static void readMenu(JsonObject c, const char* key, Menu& out) {
   out = m;
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  서버 연결 — 하나를 이어 쓴다
+// ══════════════════════════════════════════════════════════════════
+// 예전에는 요청마다 WiFiClientSecure 를 지역 변수로 새로 만들었다. 함수가 끝나면 소멸자가 연결을
+// 끊어서, 키링을 댈 때마다 DNS + TCP + TLS 핸드셰이크(서버 인증서가 ECDSA P-256)를 처음부터 했다.
+// PC 에서는 수십 ms 인 핸드셰이크가 ESP32 에서는 1초 안팎이라, 태그하고 이름이 뜨기까지가 늘어졌다.
+//
+// 서버(nginx)는 연결을 70초 넘게 살려 둔다(실측). 전역 하나를 이어 쓰면 두 번째 요청부터는
+// 왕복만 남는다. 대기 중에는 apiKeepWarm 이 45초마다 가볍게 불러 연결이 식지 않게 한다.
+static WiFiClientSecure apiTls;
+static HTTPClient       apiHttp;
+static uint32_t         apiUsedMs = 0;          // 마지막으로 쓴 때(0 = 끊어 둠)
+static const uint32_t   API_IDLE_MS = 55000;    // 이보다 오래 쉬었으면 서버가 닫았을 수 있어 새로 붙는다
+
+static void apiDrop() {
+  apiHttp.end();
+  apiTls.stop();
+  apiUsedMs = 0;
+}
+
+static bool apiBegin(const char* url) {
+  if (apiUsedMs && millis() - apiUsedMs > API_IDLE_MS) apiDrop();
+  apiTls.setInsecure();                 // 자체 서버라 인증서 검증 생략(다른 보드들과 동일)
+  apiHttp.setReuse(true);
+  apiHttp.setTimeout(cfg.httpTimeoutMs);
+  if (!apiHttp.begin(apiTls, url)) return false;
+  apiHttp.addHeader("x-talent-key", TALENT_DEVICE_KEY);   // 서버의 TALENT_DEVICE_KEY 와 대조
+  return true;
+}
+
+// 응답을 다 읽은 뒤 부른다. drop — 본문을 덜 읽었을 때(오류 응답 등). 남은 조각이 다음 응답의
+// 머리로 읽히면 엉뚱한 실패가 나므로 그때는 끊는다. 길이를 모르는 응답(chunked)도 끝을 믿을 수 없어 끊는다.
+static void apiEnd(bool drop = false) {
+  const bool unknownLen = apiHttp.getSize() < 0;
+  apiHttp.end();
+  if (drop || unknownLen) apiTls.stop();
+  apiUsedMs = millis();
+}
+
+// 이어 쓰던 연결이 서버 쪽에서 이미 닫혀 있으면 첫 요청이 **보내는 단계**에서 실패한다.
+// 그때만 새로 붙어 한 번 더 보낸다. 보내기 전에 실패한 것이라 지급·사용(POST)도 서버에 닿지 않았다 —
+// 두 번 처리될 일이 없다. 응답을 기다리다 끊긴 것(-5·-11)은 서버가 처리했을 수 있어 다시 보내지 않는다.
+static bool apiRetryable(int code) {
+  return code == HTTPC_ERROR_CONNECTION_REFUSED || code == HTTPC_ERROR_SEND_HEADER_FAILED ||
+         code == HTTPC_ERROR_SEND_PAYLOAD_FAILED || code == HTTPC_ERROR_NOT_CONNECTED;
+}
+
+// body 가 nullptr 이면 GET. 실패로 끝나면 연결을 끊어 둔다(다음 요청은 새로 붙는다).
+static int apiRequest(const char* url, const char* body) {
+  for (int attempt = 0; attempt < 2; attempt++) {
+    const bool reused = apiHttp.connected();
+    if (!apiBegin(url)) { apiDrop(); return HTTPC_ERROR_CONNECTION_REFUSED; }
+    int code;
+    if (body) {
+      apiHttp.addHeader("Content-Type", "application/json");
+      code = apiHttp.POST((uint8_t*)body, strlen(body));
+    } else {
+      code = apiHttp.GET();
+    }
+    if (code > 0) return code;
+    apiDrop();
+    if (!reused || !apiRetryable(code)) return code;
+    Serial.printf("[연결] 이어 쓰던 연결이 닫혀 있었습니다 — 새로 붙습니다 (%d)\n", code);
+  }
+  return HTTPC_ERROR_NOT_CONNECTED;
+}
+static int apiGet(const char* url)                   { return apiRequest(url, nullptr); }
+static int apiPost(const char* url, const char* body) { return apiRequest(url, body); }
+
+// 대기 중 연결 데우기 — 키링을 대는 순간 핸드셰이크를 하지 않게 미리 붙여 두고 식지 않게 한다.
+// GET /api/talent/ping 은 서버가 아무것도 읽지 않고 답한다(저장소 왕복도 없다).
+// 옛 서버에는 이 경로가 없어 401·404 가 오지만, 그래도 연결은 살아 있으므로 목적은 이룬다.
+static const uint32_t API_WARM_MS = 45000;
+static uint32_t apiWarmNextMs = 0;
+static void apiKeepWarm(uint32_t now) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (now < apiWarmNextMs) return;
+  if (apiUsedMs && now - apiUsedMs < API_WARM_MS) { apiWarmNextMs = apiUsedMs + API_WARM_MS; return; }
+  apiWarmNextMs = now + API_WARM_MS;     // 실패해도 매 루프 두드리지 않게
+  char url[128];
+  snprintf(url, sizeof(url), "%s/ping", TALENT_API_BASE);
+  const uint32_t t0 = millis();
+  const bool reused = apiHttp.connected();
+  const int code = apiGet(url);
+  if (code > 0) { apiHttp.getString(); apiEnd(); }
+  Serial.printf("[연결] 데우기 %d · %lums (%s)\n", code, (unsigned long)(millis() - t0), reused ? "이어 씀" : "새 연결");
+}
+
 // ── 서버에서 설정 받기 ──
 // GET /api/talent/config?device=<기기ID>   헤더: x-talent-key
 // 실패하면 아무것도 바꾸지 않는다. 캐시(또는 기본값)가 그대로 유지된다.
 static bool cfgFetch() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  WiFiClientSecure client;
-  client.setInsecure();                 // 자체 서버라 인증서 검증 생략(다른 보드들과 동일)
-  HTTPClient http;
-  http.setTimeout(cfg.httpTimeoutMs);
-
   char url[192];
   snprintf(url, sizeof(url), "%s/config?device=%s", TALENT_API_BASE, TALENT_DEVICE_ID);
-  if (!http.begin(client, url)) return false;
-  http.addHeader("x-talent-key", TALENT_DEVICE_KEY);
-
-  int code = http.GET();
-  String payload = (code > 0) ? http.getString() : String();
-  http.end();
+  int code = apiGet(url);
+  String payload = (code > 0) ? apiHttp.getString() : String();
+  if (code > 0) apiEnd();
 
   if (code != 200) { Serial.printf("[설정] 서버 응답 %d — 캐시를 씁니다\n", code); return false; }
 
@@ -901,19 +991,8 @@ static TalentResult talentPost(const char* path, const char* uid, int32_t amount
     return r;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();          // 자체 서버라 인증서 검증은 생략(센서 보드들과 동일)
-  HTTPClient http;
-  http.setTimeout(cfg.httpTimeoutMs);
-
   char url[128];
   snprintf(url, sizeof(url), "%s/%s", TALENT_API_BASE, path);
-  if (!http.begin(client, url)) {
-    snprintf(r.reason, sizeof(r.reason), "%s", "연결 실패");
-    return r;
-  }
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("x-talent-key", TALENT_DEVICE_KEY);   // 서버의 TALENT_DEVICE_KEY 와 대조
 
   char body[256];
   if (card && card[0]) {
@@ -930,9 +1009,9 @@ static TalentResult talentPost(const char* path, const char* uid, int32_t amount
              uid, (long)amount, TALENT_DEVICE_ID);
   }
 
-  int code = http.POST(body);
-  String payload = (code > 0) ? http.getString() : String();
-  http.end();
+  int code = apiPost(url, body);
+  String payload = (code > 0) ? apiHttp.getString() : String();
+  if (code > 0) apiEnd();
 
   JsonDocument doc;
   bool parsed = !payload.isEmpty() && !deserializeJson(doc, payload);
@@ -968,39 +1047,32 @@ static TalentResult talentPost(const char* path, const char* uid, int32_t amount
 // dir — 서버에서 받을 자리. 그림은 "/art/file/", 아이 사진은 "/photo/device/"(artDownload·photoSyncStep).
 // 받아 두는 곳은 둘 다 ART_DIR 이다 — 이름 앞머리(ph-)로 갈리므로 섞이지 않는다.
 static bool artDownloadFrom(const char* dir, const ArtFile& a) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(cfg.httpTimeoutMs);
-
   char url[192];
   snprintf(url, sizeof(url), "%s%s%s", TALENT_API_BASE, dir, a.file);
-  if (!http.begin(client, url)) return false;
-  http.addHeader("x-talent-key", TALENT_DEVICE_KEY);
 
-  const int code = http.GET();
+  const int code = apiGet(url);
   if (code != 200) {
     Serial.printf("[그림] %s 응답 %d\n", a.file, code);
-    http.end();
+    if (code > 0) apiEnd(true);         // 본문을 읽지 않았다 — 이어 쓰지 않는다
     return false;
   }
 
   // 크기가 맞지 않으면 받지 않는다. 화면에 밀어 넣을 때 길이를 믿기 때문이다.
   const int want = (int)a.w * a.h * 2;
-  if (http.getSize() != want) {
-    Serial.printf("[그림] %s 크기 불일치 %d != %d\n", a.file, http.getSize(), want);
-    http.end();
+  if (apiHttp.getSize() != want) {
+    Serial.printf("[그림] %s 크기 불일치 %d != %d\n", a.file, apiHttp.getSize(), want);
+    apiEnd(true);
     return false;
   }
 
   char path[64];
   snprintf(path, sizeof(path), "%s/%s", ART_DIR, a.file);
   fs::File f = LittleFS.open(path, "w");
-  if (!f) { http.end(); return false; }
+  if (!f) { apiEnd(true); return false; }
 
-  const int wrote = http.writeToStream(&f);
+  const int wrote = apiHttp.writeToStream(&f);
   f.close();
-  http.end();
+  apiEnd(wrote != want);                // 덜 받았으면 남은 조각이 있다 — 끊는다
 
   if (wrote != want) {
     LittleFS.remove(path);          // 반쪽짜리를 남기면 다음에 "있다" 로 오해한다
@@ -1154,24 +1226,17 @@ static bool getJson(const char* pathAndQuery, JsonDocument& doc,
                     DeserializationOption::Filter filter) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(cfg.httpTimeoutMs);
-
   char url[192];
   snprintf(url, sizeof(url), "%s%s", TALENT_API_BASE, pathAndQuery);
-  if (!http.begin(client, url)) return false;
-  http.addHeader("x-talent-key", TALENT_DEVICE_KEY);
 
-  int code = http.GET();
+  int code = apiGet(url);
   if (code != 200) {
     Serial.printf("[%s] 서버 응답 %d\n", pathAndQuery, code);
-    http.end();
+    if (code > 0) apiEnd(true);         // 본문을 읽지 않았다 — 이어 쓰지 않는다
     return false;
   }
-  DeserializationError err = deserializeJson(doc, http.getStream(), filter);
-  http.end();
+  DeserializationError err = deserializeJson(doc, apiHttp.getStream(), filter);
+  apiEnd((bool)err);                    // 해석이 중간에 멈췄으면 남은 조각이 있다 — 끊는다
   if (err) { Serial.printf("[%s] 해석 실패 %s\n", pathAndQuery, err.c_str()); return false; }
   return doc["success"].as<bool>();
 }
@@ -1335,21 +1400,13 @@ static void passEnsureWritten(const char* uid, uint16_t capBytes) {
 static void reportSeen(const char* uid) {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(cfg.httpTimeoutMs);
-
   char url[160];
   snprintf(url, sizeof(url), "%s/seen", TALENT_API_BASE);
-  if (!http.begin(client, url)) return;
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("x-talent-key", TALENT_DEVICE_KEY);
 
   char body[128];
   snprintf(body, sizeof(body), "{\"uid\":\"%s\",\"device\":\"%s\"}", uid, TALENT_DEVICE_ID);
-  const int code = http.POST(body);
-  http.end();
+  const int code = apiPost(url, body);
+  if (code > 0) { apiHttp.getString(); apiEnd(); }   // 본문까지 읽어야 연결을 이어 쓸 수 있다
   Serial.printf("[미등록] %s 알림 (%d)\n", uid, code);
 }
 
@@ -1404,7 +1461,9 @@ static bool feedFetch(uint8_t page) {
 // GET /api/talent/feed?uid=... — 한 키링의 잔액과 최근 내역
 // 내역 탭에서 키링을 댔을 때 쓴다. 잔액과 내역을 한 번에 받는 이유는, 두 번 왕복하면
 // 키링을 대고 화면이 뜰 때까지가 눈에 띄게 늘어지기 때문이다.
-static bool whoFetch(const char* uid) {
+// full — 내역까지 받는다(내역 탭). 평소 화면은 잔액만 있으면 되므로 false 로 부른다 —
+// 서버가 내역·전체 명단을 읽지 않고 그 키링 한 줄만 읽어 답한다(limit=0, 옛 서버는 내역을 붙여 준다).
+static bool whoFetch(const char* uid, bool full = true) {
   JsonDocument filter;
   filter["success"] = true;
   filter["who"]["name"]    = true;
@@ -1414,7 +1473,7 @@ static bool whoFetch(const char* uid) {
   filter["data"][0]["agoSec"] = true;
 
   char q[64];
-  snprintf(q, sizeof(q), "/feed?limit=%u&uid=%s", (unsigned)WHO_MAX, uid);
+  snprintf(q, sizeof(q), "/feed?limit=%u&uid=%s", full ? (unsigned)WHO_MAX : 0u, uid);
 
   strlcpy(whoUid, uid, sizeof(whoUid));
   whoCount = 0; whoBalance = 0; whoKnown = false; whoName[0] = '\0';
@@ -1676,6 +1735,35 @@ static void clearContent() {
       f.close();
       if (ok) { contentHasBg = true; return; }
       // 읽다 실패하면 아래에서 바탕색으로 덮는다
+    }
+  }
+  tft.fillRect(x, y, w, h, C_BG);
+}
+
+// 내용 영역의 한 조각만 바탕으로 되돌린다 — 화면 전체를 다시 그리지 않고 그 자리만 고칠 때.
+// 배경 그림이 깔려 있으면(clearContent 가 contentHasBg 로 알려 둔다) 그 조각을 파일에서 다시 읽는다.
+static void restoreContent(int x, int y, int w, int h) {
+  const int cx = BORDER, cy = contentTop();
+  const int cw = tft.width() - BORDER * 2, ch = contentH();
+  if (x < cx) { w -= cx - x; x = cx; }
+  if (y < cy) { h -= cy - y; y = cy; }
+  if (x + w > cx + cw) w = cx + cw - x;
+  if (y + h > cy + ch) h = cy + ch - y;
+  if (w <= 0 || h <= 0) return;
+
+  if (contentHasBg) {
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%s", ART_DIR, bgFile[0].file);
+    fs::File f = LittleFS.open(path, "r");
+    if (f) {
+      static uint16_t line[240];
+      bool ok = true;
+      for (int j = 0; j < h && ok; j++) {
+        ok = f.seek(((size_t)(y - cy + j) * cw + (x - cx)) * 2) && f.read((uint8_t*)line, w * 2) == (size_t)(w * 2);
+        if (ok) tft.pushImage(x, y + j, w, 1, line);
+      }
+      f.close();
+      if (ok) return;
     }
   }
   tft.fillRect(x, y, w, h, C_BG);
@@ -2104,66 +2192,46 @@ static int bodyH() { return contentH() - BTN_H - 6; }
 //
 // 등록된 카드를 목록으로 함께 보여준다. 어떤 카드가 있는지 모르면 아무 카드나
 // 대 보게 되고, 그때마다 "이 기기에서 쓸 수 없는 카드" 가 떠서 답답해진다.
-static void drawWaitCard() {
-  clearContent();
-  const int top = contentTop();
-  const int pad = 22;
+// 이름·잔액 줄과 카드 목록을 따로 그릴 수 있게 나눴다. 이름표에 있는 키링은 잔액을 받기 전에
+// 이 화면부터 띄우고(잔액 자리는 '…'), 잔액이 오면 drawWaitRefresh 가 잔액과 카드 목록만 고친다 —
+// 사진·이름을 다시 그리면 한 번 번쩍인다.
+static const int WAIT_PAD   = 22;
+static const int WAIT_BAL_W = 80;          // 잔액 자리 폭(내장 4번 폰트로 다섯 자리)
+static int waitNameX = 0;                   // 마지막으로 그린 이름의 x — 잔액만 고칠 때 이름을 다시 얹는다
+static bool waitHasPhoto = false;
 
-  // 아이 사진 — 미리 받아 둔 것이 있으면 이름 왼쪽에 48px 동그라미로(서버가 동그랗게 잘라
-  // 바깥을 비침색으로 채워 보낸다 — 배경 사진 위에서도 네모가 남지 않는다).
-  // 사진이 있으면 이름과 "카드를 대주세요" 를 사진 오른쪽에 붙인다. 사진은 구분선(top+58) 위에서
-  // 끝나므로 카드 목록 자리는 그대로다. 사진이 없거나 아직 못 받았으면 예전 모양 그대로 둔다.
-  const char* img = photoOf(curUid);
-  bool hasPhoto = false;
-  if (img) {
-    ArtFile a;
-    a.base = 0;
-    strlcpy(a.file, img, sizeof(a.file));
-    a.w = PHOTO_PX; a.h = PHOTO_PX;
-    hasPhoto = drawArtFile(a, BORDER + pad - 6, top + 4, true);   // 파일이 없으면 false
-  }
-  const int nameX = hasPhoto ? BORDER + pad - 6 + PHOTO_PX + 10 : BORDER + pad;
-
-  // 이름은 왼쪽, 잔액은 오른쪽으로 한 줄에 묶었다. 카드 목록에 자리를 내주려고
-  // 잔액을 48px 에서 26px(내장 4번 폰트)로 줄였다 — 여기서 크게 볼 것은 카드다.
+static void drawWaitName(int top) {
   useFont(20);
   tft.setTextDatum(ML_DATUM);
   contentText(inkMain());
-  tft.drawString(curName[0] ? curName : curUid, nameX, top + (hasPhoto ? 18 : 16));
+  tft.drawString(curName[0] ? curName : curUid, waitNameX, top + (waitHasPhoto ? 18 : 16));
   useFont(0);
+}
 
+static void drawWaitBalance(int top) {
   char b[12];
-  snprintf(b, sizeof(b), "%ld", (long)curBalance);
+  if (curBalanceKnown) snprintf(b, sizeof(b), "%ld", (long)curBalance);
+  else                 strlcpy(b, "...", sizeof(b));     // 받는 중 — 0 으로 보이면 잔액이 없는 줄 안다
   tft.setTextDatum(MR_DATUM);
-  contentText(inkMain());
-  tft.drawString(b, tft.width() - BORDER - pad, top + 16, 4);
+  contentText(curBalanceKnown ? inkMain() : inkMuted());
+  tft.drawString(b, tft.width() - BORDER - WAIT_PAD, top + 16, 4);
+}
 
-  useFont(14);
-  contentText(inkSub());
-  if (hasPhoto) {                      // 사진이 왼쪽을 차지하므로 가운데가 아니라 이름 밑에 붙인다
-    tft.setTextDatum(ML_DATUM);
-    tft.drawString("카드를 대주세요", nameX, top + 42);
-  } else {
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("카드를 대주세요", tft.width() / 2, top + 44);
-  }
-  useFont(0);
-
-  tft.fillRect(BORDER + 20, top + 58, tft.width() - (BORDER + 20) * 2, 1,
-               lightBg() ? C_LINE : C_TABBG);
-
+static void drawWaitList(int top) {
+  const int pad = WAIT_PAD;
   // 등록된 카드를 모두 보여준다. 지급인지 사용인지는 금액의 색이 말한다
   // (초록 = 지급, 빨강 = 사용) — 이제 그것이 화면에서 방향을 아는 유일한 자리다.
   //
   // 잔액으로 감당이 안 되는 사용 카드는 흐리게 둔다. 대 보고 나서 "포인트가
   // 모자랍니다" 를 보는 것보다, 대기 전에 눈으로 아는 편이 낫다.
+  // 잔액을 아직 받지 못했으면 흐리지 않는다 — 0 으로 쳐서 사용 카드가 모두 흐려지면 잘못 읽힌다.
   const int ROW = 24;
   int y = top + 66;
   uint8_t shown = 0;
   useFont(14);
   for (uint8_t i = 0; i < cardCount; i++) {
     if (y + ROW > contentTop() + bodyH()) break;
-    const bool tooMuch = cards[i].spend && curBalance - cards[i].amount < 0;
+    const bool tooMuch = curBalanceKnown && cards[i].spend && curBalance - cards[i].amount < 0;
     tft.setTextDatum(ML_DATUM);
     contentText(tooMuch ? inkMuted() : inkSub());
     tft.drawString(cards[i].name, BORDER + pad, y + ROW / 2);
@@ -2182,8 +2250,63 @@ static void drawWaitCard() {
     tft.drawString("등록된 카드가 없습니다", tft.width() / 2, top + 100);
   }
   useFont(0);
+}
 
+static void drawWaitCard() {
+  clearContent();
+  const int top = contentTop();
+  const int pad = WAIT_PAD;
+
+  // 아이 사진 — 미리 받아 둔 것이 있으면 이름 왼쪽에 48px 동그라미로(서버가 동그랗게 잘라
+  // 바깥을 비침색으로 채워 보낸다 — 배경 사진 위에서도 네모가 남지 않는다).
+  // 사진이 있으면 이름과 "카드를 대주세요" 를 사진 오른쪽에 붙인다. 사진은 구분선(top+58) 위에서
+  // 끝나므로 카드 목록 자리는 그대로다. 사진이 없거나 아직 못 받았으면 예전 모양 그대로 둔다.
+  const char* img = photoOf(curUid);
+  bool hasPhoto = false;
+  if (img) {
+    ArtFile a;
+    a.base = 0;
+    strlcpy(a.file, img, sizeof(a.file));
+    a.w = PHOTO_PX; a.h = PHOTO_PX;
+    hasPhoto = drawArtFile(a, BORDER + pad - 6, top + 4, true);   // 파일이 없으면 false
+  }
+  waitHasPhoto = hasPhoto;
+  waitNameX = hasPhoto ? BORDER + pad - 6 + PHOTO_PX + 10 : BORDER + pad;
+  const int nameX = waitNameX;
+
+  // 이름은 왼쪽, 잔액은 오른쪽으로 한 줄에 묶었다. 카드 목록에 자리를 내주려고
+  // 잔액을 48px 에서 26px(내장 4번 폰트)로 줄였다 — 여기서 크게 볼 것은 카드다.
+  drawWaitName(top);
+  drawWaitBalance(top);
+
+  useFont(14);
+  contentText(inkSub());
+  if (hasPhoto) {                      // 사진이 왼쪽을 차지하므로 가운데가 아니라 이름 밑에 붙인다
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("카드를 대주세요", nameX, top + 42);
+  } else {
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("카드를 대주세요", tft.width() / 2, top + 44);
+  }
+  useFont(0);
+
+  tft.fillRect(BORDER + 20, top + 58, tft.width() - (BORDER + 20) * 2, 1,
+               lightBg() ? C_LINE : C_TABBG);
+
+  drawWaitList(top);
   drawBigButton("취소", C_NEUTRAL);
+}
+
+// 잔액을 받은 뒤 — 잔액 자리와 카드 목록만 바탕으로 되돌리고 다시 그린다(사진·이름·안내는 그대로).
+// 이름이 길어 잔액 자리까지 닿았을 수 있어 이름도 한 번 더 얹는다(같은 자리에 같은 글자라 티가 나지 않는다).
+static void drawWaitRefresh() {
+  const int top = contentTop();
+  restoreContent(tft.width() - BORDER - WAIT_PAD - WAIT_BAL_W, top + 2, WAIT_BAL_W, 28);
+  drawWaitName(top);
+  drawWaitBalance(top);
+  const int listTop = top + 60;
+  restoreContent(BORDER, listTop, tft.width() - BORDER * 2, contentTop() + bodyH() - listTop);
+  drawWaitList(top);
 }
 
 // ── 3단계: 되었습니다 ─────────────────────────────────────────────
@@ -2283,6 +2406,7 @@ static void resetStep() {
   stepAt = millis();
   curUid[0] = '\0'; curName[0] = '\0';
   curBalance = 0; curCard = -1;
+  curBalanceKnown = true;
   whoCount = 0;
   lastUid[0] = '\0';                  // 같은 키링을 곧바로 다시 댈 수 있게 쿨다운을 푼다
 }
@@ -2840,9 +2964,37 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
     return;
   }
 
-  // 키링이다. 누구인지 서버에 묻는다 — 등록되지 않았으면 아무것도 만들지 않는다.
-  drawWorking();
-  if (!whoFetch(s)) {
+  // 키링이다. 이름표(미리 받아 둔 명단)에 있으면 **서버를 기다리지 않고** 이름·사진부터 띄운다.
+  // 예전에는 '확인 중' 을 띄운 채 서버 응답(잔액)이 와야 이름이 나왔다 — 태그하고 한참 뒤에 떴다.
+  // 잔액은 곧이어 받아 그 자리만 고친다(drawWaitRefresh). 명단에 없는 키링은 누구인지 몰라
+  // 예전처럼 서버에 먼저 묻는다. 출석모드는 곧바로 처리 화면으로 가므로 먼저 띄우지 않는다.
+  const uint32_t tagT0 = millis();
+  const bool early = !cfg.attendanceMode && rosterHas(s);
+  if (early) {
+    sndMode();
+    strlcpy(curUid, s, sizeof(curUid));
+    strlcpy(curName, nameOf(s), sizeof(curName));
+    curBalance = 0;
+    curBalanceKnown = false;
+    curCard = -1;
+    step = STEP_CARD;
+    stepAt = millis();
+    overlayUntil = 0;
+    drawWaitCard();
+    Serial.printf("[시간] 키링 → 이름 %lums\n", (unsigned long)(millis() - tagT0));
+  } else {
+    drawWorking();
+  }
+
+  // 누구인지·잔액을 서버에 묻는다 — 등록되지 않았으면 아무것도 만들지 않는다.
+  const bool reused = apiHttp.connected();
+  const bool got = whoFetch(s, false);
+  Serial.printf("[시간] 키링 → 잔액 %lums (%s)\n", (unsigned long)(millis() - tagT0),
+                reused ? "연결 이어 씀" : "새 연결");
+  // 먼저 띄운 화면을 물릴 때 — resetStep 은 쿨다운까지 풀어, 키링을 올려 둔 채면 오류가 연달아 뜬다
+  auto dropEarly = []() { step = STEP_IDLE; curUid[0] = '\0'; curName[0] = '\0'; curBalanceKnown = true; };
+  if (!got) {
+    if (early) dropEarly();
     sndFail();
     drawErrorScreen("잔액을 불러오지 못했습니다");
     overlayUntil = millis() + OVERLAY_MS;
@@ -2850,6 +3002,7 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
     return;
   }
   if (!whoKnown) {
+    if (early) dropEarly();
     sndFail();
     clearContent();
     useFont(20);
@@ -2867,10 +3020,22 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
     return;
   }
 
+  if (early) {
+    // 이미 이름을 띄워 두었다 — 잔액과 카드 목록만 고친다
+    curBalance = whoBalance;
+    curBalanceKnown = true;
+    if (whoName[0]) strlcpy(curName, whoName, sizeof(curName));
+    drawWaitRefresh();
+    Serial.printf("[키링] %s(%s) 잔액 %ld\n", curUid, curName, (long)curBalance);
+    lastActivity = millis();
+    return;
+  }
+
   sndMode();
   strlcpy(curUid, s, sizeof(curUid));
   strlcpy(curName, whoName, sizeof(curName));
   curBalance = whoBalance;
+  curBalanceKnown = true;
   curCard = -1;
   step = STEP_CARD;
   stepAt = millis();
@@ -3260,6 +3425,9 @@ void loop() {
 
   // ── 아이 사진 미리 받기 (조용할 때 한 장씩) ──
   photoSyncStep(now);
+
+  // ── 서버 연결 데우기 ── 대기 화면일 때만(키링·카드 처리 중이거나 결과가 떠 있을 때는 건드리지 않는다)
+  if (tab == TAB_MAIN && step == STEP_IDLE && !overlayUntil) apiKeepWarm(now);
 
   // ── 무입력이면 잠든다 (서버에서 켠 기기만) ──
   if (cfg.sleepEnabled && now - lastActivity > cfg.sleepTimeoutMs) goToDeepSleep();
