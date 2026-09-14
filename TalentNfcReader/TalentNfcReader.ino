@@ -630,24 +630,31 @@ static bool cfgFetch() {
       // 이미 빡빡해서, 여기에 1.3KB 를 더 얹으면 넘칠 수 있다.
       static PassEntry next[PASS_MAX];
       uint8_t n = 0;
+      uint16_t dropped = 0;                              // 상한을 넘어 담지 못한 실물 카드 수
       for (JsonPair kv : pm) {
-        if (n >= PASS_MAX) break;
         const char* u = kv.key().c_str();
         const char* t = kv.value().as<const char*>();
         if (!u || !t || !t[0]) continue;
         if (!isCardUid(u)) continue;                    // 한글 이름 키는 리더가 쓸 일이 없다
         if (strlen(u) >= sizeof(next[0].uid) || strlen(t) >= sizeof(next[0].token)) continue;
+        // 상한에 닿아도 멈추지 않고 끝까지 센다 — 몇 장이 빠졌는지 알려야 고칠 수 있다.
+        // (예전에는 여기서 조용히 멈춰, 넘친 아이들 카드에 주소가 안 써지는 것을 알 길이 없었다)
+        if (n >= PASS_MAX) { dropped++; continue; }
         strlcpy(next[n].uid, u, sizeof(next[0].uid));
         strlcpy(next[n].token, t, sizeof(next[0].token));
         // 토큰이 그대로면 "이미 써 있다" 는 판정을 물려받는다. 설정을 받을 때마다
         // 처음부터 다시 읽으면 5분마다 카드를 훑게 된다.
-        const int8_t old = passIndexOf(u);
+        const int16_t old = passIndexOf(u);
         next[n].ok = (old >= 0 && !strcmp(passes[old].token, t)) ? passes[old].ok : false;
         n++;
       }
       memcpy(passes, next, sizeof(PassEntry) * n);
       passCount = n;
       Serial.printf("[링크] 표 %u개 (%s…) 받음\n", passCount, passBase);
+      if (dropped) {
+        Serial.printf("[링크] 경고: 상한 %u개를 넘어 %u장은 담지 못했습니다 — 그 카드에는 주소가 써지지 않습니다(PASS_MAX)\n",
+                      (unsigned)PASS_MAX, (unsigned)dropped);
+      }
     }
   }
 
@@ -1187,9 +1194,11 @@ static bool isCardUid(const char* s) {
   return true;
 }
 
-static int8_t passIndexOf(const char* uid) {
+// int16_t 로 돌려준다 — 표가 128개를 넘으면 int8_t 로는 번호가 음수로 넘어가
+// "표에 없는 카드" 로 읽힌다(PASS_MAX 가 200 이다).
+static int16_t passIndexOf(const char* uid) {
   for (uint8_t i = 0; i < passCount; i++)
-    if (!strcmp(passes[i].uid, uid)) return (int8_t)i;
+    if (!strcmp(passes[i].uid, uid)) return (int16_t)i;
   return -1;
 }
 
@@ -1210,7 +1219,7 @@ static bool passAlreadyOn(const char* url, uint8_t len) {
 // capBytes 는 그 카드의 사용자 영역 크기 — CC 세 번째 바이트 × 8 (NTAG213 은 144).
 static void passEnsureWritten(const char* uid, uint16_t capBytes) {
   if (!passBase[0]) return;
-  const int8_t i = passIndexOf(uid);
+  const int16_t i = passIndexOf(uid);
   if (i < 0 || passes[i].ok) return;                    // 표에 없거나 이미 확인했다
 
   char url[64];
