@@ -72,7 +72,12 @@ struct CardEntry {
 // 두었다가, 카드를 알아본 그 자리에서 바로 쓴다.
 //
 // CardEntry 와 같은 이유로 헤더에 둔다(자동 프로토타입보다 먼저 보여야 한다).
-#define PASS_MAX 32
+//
+// 상한은 이름표(ROSTER_MAX)와 같은 200 이다. 예전 32 는 명단(49명)보다 작아서, 실물 키링을
+// 받은 아이가 32명을 넘으면 나머지는 카드에 주소가 써지지 않았다 — 경고도 없이.
+// 한 줄 41바이트 × 200 = 8.2KB 를 표 두 벌(passes · 받는 중 next)이 쓴다. 256 을 넘기면
+// passCount(uint8_t)도 넓혀야 한다.
+#define PASS_MAX 200
 struct PassEntry {
   char uid[24];      // 카드 UID (16진 대문자). CardEntry 와 같은 크기로 맞춘다
   char token[16];    // 서버가 준 8자 토큰
