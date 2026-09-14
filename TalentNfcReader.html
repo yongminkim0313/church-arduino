@@ -450,9 +450,10 @@ let lastUid = '', lastTagMs = 0;
 let forcedError = null;
 
 /* 서버(RTDB) 흉내 */
+// photo — 기기가 미리 받아 둔 사진이 있는 키링(roster 의 img). 시뮬레이터에는 사진 파일이 없어 색 동그라미로 대신한다.
 const rings = [
-  { uid:'04A2B1C3', name:'김용민', bal:12 },
-  { uid:'04D5E6F7', name:'박지훈', bal:3  },
+  { uid:'04A2B1C3', name:'김용민', bal:12, photo:'#6f9fd8' },
+  { uid:'04D5E6F7', name:'박지훈', bal:3,  photo:'#e08a5f' },
   { uid:'0418C9AB', name:'이서연', bal:0  },
   { uid:'04FF20D1', name:'',       bal:7  }   // 이름 없는 키링
 ];
@@ -690,12 +691,24 @@ function drawWaitCard(){
   clearContent();
   const top = contentTop(), pad = 22;
 
+  /* 아이 사진 — 기기가 미리 받아 둔 48px 동그라미(.ino 의 drawWaitCard 와 같은 자리).
+     있으면 이름과 "카드를 대주세요" 를 사진 오른쪽에 붙이고, 없으면 예전 모양 그대로.
+     사진은 구분선(top+58) 위에서 끝나 카드 목록 자리는 그대로다. */
+  const photo = flowWho.ring && flowWho.ring.photo;
+  const px = BORDER + pad - 6, PH = 48;
+  const nameX = photo ? px + PH + 10 : BORDER + pad;
+  if (photo){
+    ctx.fillStyle = photo; ctx.beginPath(); ctx.arc(px + PH/2, top + 4 + PH/2, PH/2, 0, Math.PI*2); ctx.fill();
+    kr20((flowWho.name || '?')[0], px + PH/2, top + 4 + PH/2, { color:'#FFFFFF' });
+  }
+
   /* 이름은 왼쪽, 잔액은 오른쪽 한 줄. 카드 목록에 자리를 내주려고 잔액을
      48px 에서 26px(내장 4번)로 줄였다 — 여기서 크게 볼 것은 카드다. */
-  kr20(flowWho.name || flowWho.uid, BORDER + pad, top + 16, { datum:'ML', color:inkMain() });
+  kr20(flowWho.name || flowWho.uid, nameX, top + (photo ? 18 : 16), { datum:'ML', color:inkMain() });
   num(flowWho.bal, W() - BORDER - pad, top + 16, { datum:'MR', font:4, color:inkMain() });
 
-  kr('카드를 대주세요', W()/2, top + 44, { color:inkSub() });
+  if (photo) kr('카드를 대주세요', nameX, top + 42, { datum:'ML', color:inkSub() });
+  else       kr('카드를 대주세요', W()/2, top + 44, { color:inkSub() });
   fillRect(BORDER + 20, top + 58, W() - (BORDER+20)*2, 1, bgShade(20));
 
   /* 등록된 카드를 모두 보여준다. 지급인지 사용인지는 금액의 색이 말한다

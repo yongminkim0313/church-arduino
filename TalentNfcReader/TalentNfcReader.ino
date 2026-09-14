@@ -317,9 +317,26 @@ static uint8_t   passUriId  = 0x04;     // NDEF URI 코드 (0x04 = "https://")
 // 부팅할 때 GET /api/talent/roster 로 받아 둔다. 태그를 대는 순간 이름을
 // 띄우려면 서버 응답을 기다릴 수 없어서다(왕복이 1초 가까이 걸린다).
 #define ROSTER_MAX 200
-struct RosterEntry { char uid[16]; char name[24]; };
+// img — 그 아이 사진 파일 이름 "ph-<24자>-48.565"(34자). 사진이 없으면 빈 값.
+struct RosterEntry { char uid[16]; char name[24]; char img[36]; };
 static RosterEntry roster[ROSTER_MAX];
 static uint16_t    rosterCount = 0;
+
+// ── 아이 사진 ──────────────────────────────────────────────────────
+// 키링을 대는 순간 이름 옆에 사진을 띄운다. 그때 서버에 물으면 늦으므로(이름과 같은 이유)
+// 이름표에 딸려 오는 사진 이름을 보고 **미리** 받아 LittleFS 에 둔다. 파일 이름에 사진마다
+// 다른 무작위 값이 들어 있어 "있다 = 최신" 이다 — 아이나 선생님이 사진을 바꾸면 이름이
+// 바뀌어 새로 받고, 옛 파일은 artPrune 이 지운다.
+//
+// 한꺼번에 받지 않는다. 오십 명이면 수십 초가 걸리고 그동안 태깅이 굳는다. 대기 화면에서
+// 조용할 때 한 장씩 받는다(photoSyncStep) — 한 장이 48x48x2 = 4.6KB 라 금방이다.
+// 아직 못 받은 아이는 사진 없이 이름만 뜬다(예전 모양 그대로).
+#define PHOTO_PX 48               // 서버(talentPhoto.DEVICE_PX)와 같아야 한다 — 파일 이름에도 들어간다
+static uint16_t photoCursor = 0;  // 다음에 확인할 이름표 자리
+static uint32_t photoNextMs = 0;  // 다음 한 장을 받아도 되는 시각
+// 이번에 이름표를 제대로 받았는가. 못 받았으면(부팅 때 서버가 꺼져 있었다든지) 이름표가 비어
+// 있어서, 사진 파일을 "목록에 없음" 으로 보고 모두 지워 버리게 된다 — 그때는 지우지 않는다.
+static bool     rosterFresh = false;
 
 // ── 내역 탭 ───────────────────────────────────────────────────────
 // 위·아래 페이지 띠를 빼면 여섯 줄쯤 들어간다. 더 받아 봐야 못 그리므로 열 건만 든다.
@@ -351,6 +368,20 @@ static const char* nameOf(const char* uid) {
   for (uint16_t i = 0; i < rosterCount; i++)
     if (!strcmp(roster[i].uid, uid)) return roster[i].name;
   return uid;
+}
+
+// UID 의 사진 파일 이름. 이름표에 없거나 사진이 없으면 nullptr.
+static const char* photoOf(const char* uid) {
+  for (uint16_t i = 0; i < rosterCount; i++)
+    if (!strcmp(roster[i].uid, uid)) return roster[i].img[0] ? roster[i].img : nullptr;
+  return nullptr;
+}
+
+// 이 파일 이름이 지금 이름표의 사진인가(artPrune 이 지워도 되는지 가를 때 쓴다).
+static bool photoInRoster(const char* name) {
+  for (uint16_t i = 0; i < rosterCount; i++)
+    if (roster[i].img[0] && !strcmp(roster[i].img, name)) return true;
+  return false;
 }
 
 // 서버가 이미 범위를 조여서 주지만, 기기에서도 한 번 더 조인다.
@@ -847,14 +878,16 @@ static TalentResult talentPost(const char* path, const char* uid, int32_t amount
 
 // 한 장 받아 파일로 쓴다. 26KB 를 통째로 메모리에 올리지 않고 흘려 쓴다 —
 // HTTPS 핸드셰이크가 쓸 힙을 남겨 두어야 한다.
-static bool artDownload(const ArtFile& a) {
+// dir — 서버에서 받을 자리. 그림은 "/art/file/", 아이 사진은 "/photo/device/"(artDownload·photoSyncStep).
+// 받아 두는 곳은 둘 다 ART_DIR 이다 — 이름 앞머리(ph-)로 갈리므로 섞이지 않는다.
+static bool artDownloadFrom(const char* dir, const ArtFile& a) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(cfg.httpTimeoutMs);
 
   char url[192];
-  snprintf(url, sizeof(url), "%s/art/file/%s", TALENT_API_BASE, a.file);
+  snprintf(url, sizeof(url), "%s%s%s", TALENT_API_BASE, dir, a.file);
   if (!http.begin(client, url)) return false;
   http.addHeader("x-talent-key", TALENT_DEVICE_KEY);
 
@@ -906,9 +939,13 @@ static void artPrune() {
   }
 }
 
-// 파일 이름이 지금 목록(배경 + 완료 그림 + 카드 그림)에 있는지.
+static bool artDownload(const ArtFile& a) { return artDownloadFrom("/art/file/", a); }
+
+// 파일 이름이 지금 목록(배경 + 완료 그림 + 카드 그림 + 아이 사진)에 있는지.
 // 여기서 빠뜨리면 artPrune 이 방금 받은 그림을 지워 버린다.
 static bool artWanted(const char* name) {
+  // 아이 사진 — 이름표를 제대로 받았을 때만 가른다(rosterFresh 주석 참고)
+  if (!strncmp(name, "ph-", 3)) return !rosterFresh || photoInRoster(name);
   for (uint8_t i = 0; i < 2; i++)
     if (bgHas[i] && !strcmp(name, bgFile[i].file)) return true;
   for (uint8_t i = 0; i < 2; i++)
@@ -986,6 +1023,38 @@ static void artSync() {
   Serial.printf("[그림] %u/%u 준비됨\n", got, want);
 }
 
+// 아이 사진 한 장 받기 — loop 가 부른다. 받을 것이 있어도 **조용할 때만** 한 장씩 받는다:
+//   · 대기 화면(키링을 기다리는 중)이고
+//   · 5초 동안 아무 입력이 없고
+//   · 와이파이가 붙어 있을 때
+// 한 장 받는 동안(0.5초 남짓) 루프가 멈춘다. 줄 선 아이가 키링을 대는 사이에 받으면 그만큼
+// 태깅이 늦게 반응하므로 조건을 좁게 잡았다. 실패하면 3초 쉬고 다음 아이로 넘어간다 —
+// 그 아이는 다음 이름표 갱신(설정 주기) 때 다시 시도한다.
+static void photoSyncStep(uint32_t now) {
+  if (photoCursor >= rosterCount || now < photoNextMs) return;
+  if (step != STEP_IDLE || now - lastActivity < 5000) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  // 이미 받아 둔 것은 건너뛰며 받을 한 장을 찾는다. 한 번에 16자리까지만 본다 —
+  // 루프를 오래 붙잡지 않게(남은 자리는 다음 루프에서 이어서 본다).
+  for (uint8_t n = 0; n < 16 && photoCursor < rosterCount; n++) {
+    const RosterEntry& r = roster[photoCursor++];
+    if (!r.img[0]) continue;
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%s", ART_DIR, r.img);
+    if (LittleFS.exists(path)) continue;
+
+    ArtFile a;
+    a.base = 0;
+    strlcpy(a.file, r.img, sizeof(a.file));
+    a.w = PHOTO_PX; a.h = PHOTO_PX;
+    const bool ok = artDownloadFrom("/photo/device/", a);
+    Serial.printf("[사진] %s %s\n", r.name, ok ? "받음" : "못 받음");
+    photoNextMs = millis() + (ok ? 300 : 3000);
+    return;
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════
 //  이름표 · 내역 받기
 // ══════════════════════════════════════════════════════════════════
@@ -1026,21 +1095,33 @@ static bool rosterFetch() {
   filter["success"] = true;
   filter["data"][0]["uid"]  = true;
   filter["data"][0]["name"] = true;
+  filter["data"][0]["img"]  = true;     // 사진 파일 이름(없으면 칸이 없다 — 옛 서버도 마찬가지)
 
   JsonDocument doc;
   if (!getJson("/roster", doc, DeserializationOption::Filter(filter))) return false;
 
   rosterCount = 0;
+  uint16_t withPhoto = 0;
   for (JsonObject r : doc["data"].as<JsonArray>()) {
     if (rosterCount >= ROSTER_MAX) break;
     const char* u = r["uid"]  | "";
     const char* n = r["name"] | "";
+    const char* p = r["img"]  | "";
     if (!u[0] || !n[0]) continue;
     strlcpy(roster[rosterCount].uid,  u, sizeof(roster[0].uid));
     strlcpy(roster[rosterCount].name, n, sizeof(roster[0].name));
+    // 이름이 길어 잘리면 없는 파일을 찾게 되므로, 칸에 다 들어가지 않는 이름은 사진 없음으로 둔다
+    if (p[0] && strlen(p) < sizeof(roster[0].img)) {
+      strlcpy(roster[rosterCount].img, p, sizeof(roster[0].img));
+      withPhoto++;
+    } else {
+      roster[rosterCount].img[0] = '\0';
+    }
     rosterCount++;
   }
-  Serial.printf("[이름표] %u명 받음\n", rosterCount);
+  rosterFresh = true;
+  photoCursor = 0;                      // 사진은 처음부터 다시 훑는다(이미 있는 것은 금방 건너뛴다)
+  Serial.printf("[이름표] %u명 받음 · 사진 %u명\n", rosterCount, withPhoto);
   return true;
 }
 
@@ -1939,12 +2020,27 @@ static void drawWaitCard() {
   const int top = contentTop();
   const int pad = 22;
 
+  // 아이 사진 — 미리 받아 둔 것이 있으면 이름 왼쪽에 48px 동그라미로(서버가 동그랗게 잘라
+  // 바깥을 비침색으로 채워 보낸다 — 배경 사진 위에서도 네모가 남지 않는다).
+  // 사진이 있으면 이름과 "카드를 대주세요" 를 사진 오른쪽에 붙인다. 사진은 구분선(top+58) 위에서
+  // 끝나므로 카드 목록 자리는 그대로다. 사진이 없거나 아직 못 받았으면 예전 모양 그대로 둔다.
+  const char* img = photoOf(curUid);
+  bool hasPhoto = false;
+  if (img) {
+    ArtFile a;
+    a.base = 0;
+    strlcpy(a.file, img, sizeof(a.file));
+    a.w = PHOTO_PX; a.h = PHOTO_PX;
+    hasPhoto = drawArtFile(a, BORDER + pad - 6, top + 4, true);   // 파일이 없으면 false
+  }
+  const int nameX = hasPhoto ? BORDER + pad - 6 + PHOTO_PX + 10 : BORDER + pad;
+
   // 이름은 왼쪽, 잔액은 오른쪽으로 한 줄에 묶었다. 카드 목록에 자리를 내주려고
   // 잔액을 48px 에서 26px(내장 4번 폰트)로 줄였다 — 여기서 크게 볼 것은 카드다.
   useFont(20);
   tft.setTextDatum(ML_DATUM);
   contentText(inkMain());
-  tft.drawString(curName[0] ? curName : curUid, BORDER + pad, top + 16);
+  tft.drawString(curName[0] ? curName : curUid, nameX, top + (hasPhoto ? 18 : 16));
   useFont(0);
 
   char b[12];
@@ -1954,9 +2050,14 @@ static void drawWaitCard() {
   tft.drawString(b, tft.width() - BORDER - pad, top + 16, 4);
 
   useFont(14);
-  tft.setTextDatum(MC_DATUM);
   contentText(inkSub());
-  tft.drawString("카드를 대주세요", tft.width() / 2, top + 44);
+  if (hasPhoto) {                      // 사진이 왼쪽을 차지하므로 가운데가 아니라 이름 밑에 붙인다
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("카드를 대주세요", nameX, top + 42);
+  } else {
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("카드를 대주세요", tft.width() / 2, top + 44);
+  }
   useFont(0);
 
   tft.fillRect(BORDER + 20, top + 58, tft.width() - (BORDER + 20) * 2, 1,
@@ -3054,6 +3155,9 @@ void loop() {
       if (!overlayUntil) drawScreen();
     }
   }
+
+  // ── 아이 사진 미리 받기 (조용할 때 한 장씩) ──
+  photoSyncStep(now);
 
   // ── 무입력이면 잠든다 (서버에서 켠 기기만) ──
   if (cfg.sleepEnabled && now - lastActivity > cfg.sleepTimeoutMs) goToDeepSleep();
