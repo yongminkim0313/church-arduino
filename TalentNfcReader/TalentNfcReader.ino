@@ -1102,7 +1102,32 @@ static void artPrune() {
   }
 }
 
-static bool artDownload(const ArtFile& a) { return artDownloadFrom("/art/file/", a); }
+// ── 켤 때 화면 아래 진행 줄 ──
+// 켤 때는 와이파이·설정·카드·명단·그림을 차례로 받느라 몇 초가 걸린다. 켤 때 그림(splash)만 떠 있으면
+// 멈춘 것인지 받는 중인지 알 수 없어, 화면 맨 아래에 지금 하는 일을 한 줄로 적는다.
+// 켜는 중(setup)에만 그린다 — 다시 붙었을 때 afterOnline 이 불려도 평소 화면에는 그리지 않는다.
+static bool bootShowing = false;
+static uint16_t bootDownloads = 0;           // 켜면서 새로 받은 그림 수
+static const int BOOT_BAR_H = 26;
+static void bootStatus(const char* fmt, ...) {
+  if (!bootShowing) return;
+  char msg[64];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+  const int y = tft.height() - BOOT_BAR_H;
+  tft.fillRect(0, y, tft.width(), BOOT_BAR_H, 0x2104);   // 짙은 띠 — 켤 때 그림 위에서도 읽힌다
+  useFont(14);                                          // 켜는 동안 14px 을 들고 있는다(줄마다 다시 읽지 않게)
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, 0x2104);
+  tft.drawString(msg, tft.width() / 2, y + BOOT_BAR_H / 2);
+}
+
+static bool artDownload(const ArtFile& a) {
+  if (bootShowing) bootStatus("그림 받는 중 (%u장째)", (unsigned)++bootDownloads);
+  return artDownloadFrom("/art/file/", a);
+}
 
 // 파일 이름이 지금 목록(배경 + 완료 그림 + 카드 그림 + 아이 사진)에 있는지.
 // 여기서 빠뜨리면 artPrune 이 방금 받은 그림을 지워 버린다.
@@ -1717,9 +1742,20 @@ static uint16_t bgShade(uint8_t amt) {
   return tft.color565(r, g, b);
 }
 
-static void clearContent() {
+// 그림을 몇 줄씩 묶어 읽고 보낸다. 예전에는 한 줄마다 파일 읽기 + SPI 전송(창 잡기·잠금)을 따로 해서
+// 배경(270줄)과 큰 사진(208줄)을 그리는 데만 눈에 띄게 걸렸다. 16줄이면 버퍼가 240x16x2 = 7.7KB 다.
+#define BLIT_ROWS 16
+static uint16_t blitBuf[240 * BLIT_ROWS];
+static uint16_t blitSide[240 * BLIT_ROWS];
+
+// hole — 곧 불투명한 그림(큰 사진)으로 덮일 네모. 그 안의 배경은 그리지 않는다(어차피 가려진다).
+// inset — 네모 위아래 몇 줄은 그래도 그린다. 사진 모서리가 둥글어(비침색) 그 틈으로 배경이 보이기 때문이다.
+// hw 가 0 이면 구멍 없이 전부 그린다(clearContent).
+static void clearContentHole(int hx, int hy, int hw, int hh, int inset) {
   const int x = BORDER, y = contentTop();
   const int w = tft.width() - BORDER * 2, h = contentH();
+  const int y0 = hw > 0 ? hy + inset : 0, y1 = hw > 0 ? hy + hh - inset : 0;   // 건너뛸 줄 [y0, y1)
+  const int lw = hw > 0 ? hx - x : 0, rw = hw > 0 ? x + w - (hx + hw) : 0;       // 구멍 줄의 왼쪽·오른쪽 여백
 
   contentHasBg = false;
   C_BG = screenBg();
@@ -1732,19 +1768,43 @@ static void clearContent() {
     snprintf(path, sizeof(path), "%s/%s", ART_DIR, bgFile[0].file);
     fs::File f = LittleFS.open(path, "r");
     if (f) {
-      static uint16_t line[240];
       bool ok = true;
-      for (int j = 0; j < h && ok; j++) {
-        if (f.read((uint8_t*)line, w * 2) != w * 2) ok = false;
-        else tft.pushImage(x, y + j, w, 1, line);
+      for (int j = 0; j < h && ok; j += BLIT_ROWS) {
+        const int n = min(BLIT_ROWS, h - j);
+        if (f.read((uint8_t*)blitBuf, (size_t)w * n * 2) != (size_t)w * n * 2) { ok = false; break; }
+        // 묶음 안에서 '구멍 줄' 과 '온 줄' 로 이어진 토막마다 한 번씩 보낸다
+        for (int r = 0; r < n;) {
+          const bool in = (y + j + r) >= y0 && (y + j + r) < y1;
+          int k = r;
+          while (k < n && (((y + j + k) >= y0 && (y + j + k) < y1) == in)) k++;
+          if (!in) {
+            tft.pushImage(x, y + j + r, w, k - r, blitBuf + r * w);
+          } else {
+            if (lw > 0) {
+              for (int q = r; q < k; q++) memcpy(blitSide + (q - r) * lw, blitBuf + q * w, (size_t)lw * 2);
+              tft.pushImage(x, y + j + r, lw, k - r, blitSide);
+            }
+            if (rw > 0) {
+              for (int q = r; q < k; q++) memcpy(blitSide + (q - r) * rw, blitBuf + q * w + (w - rw), (size_t)rw * 2);
+              tft.pushImage(x + w - rw, y + j + r, rw, k - r, blitSide);
+            }
+          }
+          r = k;
+        }
       }
       f.close();
       if (ok) { contentHasBg = true; return; }
       // 읽다 실패하면 아래에서 바탕색으로 덮는다
     }
   }
-  tft.fillRect(x, y, w, h, C_BG);
+  if (hw <= 0) { tft.fillRect(x, y, w, h, C_BG); return; }
+  tft.fillRect(x, y, w, y0 - y, C_BG);                       // 구멍 위
+  tft.fillRect(x, y1, w, y + h - y1, C_BG);                  // 구멍 아래
+  if (lw > 0) tft.fillRect(x, y0, lw, y1 - y0, C_BG);        // 구멍 옆
+  if (rw > 0) tft.fillRect(x + w - rw, y0, rw, y1 - y0, C_BG);
 }
+
+static void clearContent() { clearContentHole(0, 0, 0, 0, 0); }
 
 // 내용 영역의 한 조각만 바탕으로 되돌린다 — 화면 전체를 다시 그리지 않고 그 자리만 고칠 때.
 // 배경 그림이 깔려 있으면(clearContent 가 contentHasBg 로 알려 둔다) 그 조각을 파일에서 다시 읽는다.
@@ -1846,12 +1906,17 @@ static bool drawArtFile(const ArtFile& a, int x, int y, bool transp) {
   // 화면 폭(240)만큼 잡는다. 예전에는 128 이었는데, 그때는 이 함수가 포인트·카드
   // 그림(폭 108)만 그렸기 때문이다. 헤더 띠(232)와 완료 그림(154)이 이 길을 타면서
   // 폭이 128 을 넘어 조용히 false 로 떨어졌다 — 올려도 안 나오던 원인이다.
-  static uint16_t line[240];
   if (a.w > 240) { f.close(); return false; }
-  for (int j = 0; j < a.h; j++) {
-    if (f.read((uint8_t*)line, a.w * 2) != a.w * 2) { f.close(); return false; }
-    if (transp) tft.pushImage(x, y + j, a.w, 1, line, ART_TRANSPARENT);
-    else        tft.pushImage(x, y + j, a.w, 1, line);
+  // 몇 줄씩 묶어 읽고 보낸다(BLIT_ROWS). 비침색이 든 묶음만 비침 경로로 보낸다 — 비침 경로는 픽셀마다
+  // 색을 보고 이어진 토막마다 창을 다시 잡아 느리다. 큰 사진은 둥근 모서리가 있는 위아래 몇 묶음만 해당된다.
+  for (int j = 0; j < a.h; j += BLIT_ROWS) {
+    const int n = min(BLIT_ROWS, (int)a.h - j);
+    const size_t cnt = (size_t)a.w * n;
+    if (f.read((uint8_t*)blitBuf, cnt * 2) != cnt * 2) { f.close(); return false; }
+    bool keyed = false;
+    if (transp) for (size_t i = 0; i < cnt; i++) if (blitBuf[i] == ART_TRANSPARENT) { keyed = true; break; }
+    if (keyed) tft.pushImage(x, y + j, a.w, n, blitBuf, ART_TRANSPARENT);
+    else       tft.pushImage(x, y + j, a.w, n, blitBuf);
   }
   f.close();
   return true;
@@ -2272,21 +2337,40 @@ static int bigX() { return (tft.width() - PHOTO_PX) / 2; }
 static int bigY() { return contentTop() + (bodyH() - PHOTO_PX) / 2; }
 static bool bigFits() { return PHOTO_PX <= tft.width() - BORDER * 2 && PHOTO_PX <= bodyH(); }
 
-static void drawBigTop() {
-  const int x = bigX() + 8, y = bigY() + 8, w = PHOTO_PX - 16;
-  tft.fillRoundRect(x, y, w, BIG_BAND_H, 8, BIG_BAND);
+// 띠 글자는 한글 폰트(FontKR)다. useFont 로 크기를 바꿀 때마다 글자표를 다시 읽어서, 예전처럼
+// 윗띠(20) → 풀기 → 아랫띠(14) → 풀기 → 취소 단추(20) → 풀기 로 세 번 불러오면 띠가 사진보다 오래 걸렸다(64ms).
+// 20px(이름·취소 단추) → 14px(안내·P) → 내장 폰트(잔액 숫자) 차례로 한 번씩만 바꾼다.
+// 잔액이 오면 숫자 자리만 내장 폰트로 고친다(drawBigBalance) — 한글 폰트를 다시 부르지 않는다.
+static const int BIG_BAL_W = 60;            // 잔액 숫자 자리 폭(내장 4번 폰트 네 자리)
+static int bigBalRight = 0;                 // 잔액 숫자의 오른쪽 끝(P 앞)
+
+static void drawBigBalance() {
+  const int y = bigY() + PHOTO_PX - 8 - BIG_BAND_H, cy = y + BIG_BAND_H / 2;
+  useFont(0);
+  tft.fillRect(bigBalRight - BIG_BAL_W, y + 2, BIG_BAL_W, BIG_BAND_H - 4, BIG_BAND);
+  char b[12];
+  if (curBalanceKnown) snprintf(b, sizeof(b), "%ld", (long)curBalance);
+  else                 strlcpy(b, "...", sizeof(b));     // 받는 중 — 0 으로 보이면 잔액이 없는 줄 안다
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(curBalanceKnown ? TFT_WHITE : 0x8410, BIG_BAND);
+  tft.drawString(b, bigBalRight, cy + 1, 4);
+}
+
+static void drawBigBands() {
+  const int x = bigX() + 8, w = PHOTO_PX - 16;
+  const int ty = bigY() + 8;
+  const int by = bigY() + PHOTO_PX - 8 - BIG_BAND_H, cy = by + BIG_BAND_H / 2;
+  tft.fillRoundRect(x, ty, w, BIG_BAND_H, 8, BIG_BAND);
+  tft.fillRoundRect(x, by, w, BIG_BAND_H, 8, BIG_BAND);
+
+  // 20px — 이름, 그리고 같은 폰트로 취소 단추(drawBigButton 은 끝에 폰트를 푼다)
   useFont(20);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, BIG_BAND);
-  tft.drawString(curName[0] ? curName : curUid, bigX() + PHOTO_PX / 2, y + BIG_BAND_H / 2);
-  useFont(0);
-}
+  tft.drawString(curName[0] ? curName : curUid, bigX() + PHOTO_PX / 2, ty + BIG_BAND_H / 2);
+  drawBigButton("취소", C_NEUTRAL);
 
-static void drawBigBottom() {
-  const int x = bigX() + 8, w = PHOTO_PX - 16;
-  const int y = bigY() + PHOTO_PX - 8 - BIG_BAND_H, cy = y + BIG_BAND_H / 2;
-  tft.fillRoundRect(x, y, w, BIG_BAND_H, 8, BIG_BAND);
-
+  // 14px — 안내와 P
   useFont(14);
   tft.setTextDatum(ML_DATUM);
   tft.setTextColor(0xC618, BIG_BAND);            // 옅은 회색 — 안내는 잔액보다 한 단계 물린다
@@ -2294,37 +2378,40 @@ static void drawBigBottom() {
   tft.setTextDatum(MR_DATUM);
   tft.setTextColor(TFT_WHITE, BIG_BAND);
   tft.drawString("P", x + w - 10, cy + 2);
-  const int pW = tft.textWidth("P");
-  useFont(0);
+  bigBalRight = x + w - 12 - tft.textWidth("P");
 
-  char b[12];
-  if (curBalanceKnown) snprintf(b, sizeof(b), "%ld", (long)curBalance);
-  else                 strlcpy(b, "...", sizeof(b));     // 받는 중 — 0 으로 보이면 잔액이 없는 줄 안다
-  tft.setTextColor(curBalanceKnown ? TFT_WHITE : 0x8410, BIG_BAND);
-  tft.drawString(b, x + w - 12 - pW, cy + 1, 4);
+  drawBigBalance();                              // 안에서 폰트를 푼다
 }
 
 static void drawWaitCard() {
-  clearContent();
   const int top = contentTop();
   const int pad = WAIT_PAD;
 
   waitBig = false;
   const char* img = photoOf(curUid);
   if (img && bigFits()) {
-    ArtFile a;
-    a.base = 0;
-    strlcpy(a.file, img, sizeof(a.file));
-    a.w = PHOTO_PX; a.h = PHOTO_PX;
-    if (drawArtFile(a, bigX(), bigY(), true)) {  // 파일이 없거나 덜 받았으면 false
-      waitBig = true;
-      drawBigTop();
-      drawBigBottom();
-      drawBigButton("취소", C_NEUTRAL);
-      return;
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%s", ART_DIR, img);
+    if (LittleFS.exists(path)) {
+      // 사진이 덮을 가운데는 배경을 그리지 않는다 — 둥근 모서리(8%) 틈만큼 위아래 줄은 그린다
+      const uint32_t t0 = millis();
+      clearContentHole(bigX(), bigY(), PHOTO_PX, PHOTO_PX, PHOTO_PX * 8 / 100 + 2);
+      const uint32_t t1 = millis();
+      ArtFile a;
+      a.base = 0;
+      strlcpy(a.file, img, sizeof(a.file));
+      a.w = PHOTO_PX; a.h = PHOTO_PX;
+      if (drawArtFile(a, bigX(), bigY(), true)) {  // 덜 받은 파일이면 false
+        const uint32_t t2 = millis();
+        waitBig = true;
+        drawBigBands();
+        Serial.printf("[시간] 큰 사진 화면 — 바탕 %lums · 사진 %lums · 띠 %lums\n",
+                      (unsigned long)(t1 - t0), (unsigned long)(t2 - t1), (unsigned long)(millis() - t2));
+        return;
+      }
     }
-    clearContent();                                // 그리다 멈췄으면 반쪽 사진을 지우고 글자 모양으로
   }
+  clearContent();                                  // 사진이 없거나 그리다 멈췄으면 글자 모양으로
 
   // ── 글자만 있는 모양(사진이 없거나 아직 못 받았을 때) ──
   // 이름은 왼쪽, 잔액은 오른쪽으로 한 줄에 묶었다. 카드 목록에 자리를 내주려고
@@ -2350,7 +2437,7 @@ static void drawWaitCard() {
 // 잔액을 받은 뒤 — 잔액 자리와 카드 목록만 바탕으로 되돌리고 다시 그린다(사진·이름·안내는 그대로).
 // 이름이 길어 잔액 자리까지 닿았을 수 있어 이름도 한 번 더 얹는다(같은 자리에 같은 글자라 티가 나지 않는다).
 static void drawWaitRefresh() {
-  if (waitBig) { drawBigBottom(); return; }        // 큰 사진 모양 — 아래 띠(잔액)만 고친다
+  if (waitBig) { drawBigBalance(); return; }       // 큰 사진 모양 — 잔액 숫자 자리만 고친다
   const int top = contentTop();
   restoreContent(tft.width() - BORDER - WAIT_PAD - WAIT_BAL_W, top + 2, WAIT_BAL_W, 28);
   drawWaitName(top);
@@ -2825,14 +2912,19 @@ static bool provisionMode() {
 static void afterOnline() {
   Serial.printf("WiFi 연결됨 %s\n", WiFi.localIP().toString().c_str());
   // 설정을 받아온다. 실패해도 캐시(또는 기본값)로 계속 간다.
+  bootStatus("설정 받는 중");
   if (cfgFetch()) {
+    bootStatus("카드 목록 받는 중");
     cardsFetch();                      // 카드 목록도 함께 받아 둔다
     analogWrite(PIN_TFT_BL, cfg.backlight);  // 밝기만 바로 반영(다시 페이드하면 깜빡인다)
   }
   // 이름표는 태깅 즉시 이름을 띄우기 위해 미리 받아 둔다.
   // 내역은 그 탭을 열 때 받는다 — 부팅을 그만큼 늦출 이유가 없다.
-  rosterFetch();
+  bootStatus("명단 받는 중");
+  if (rosterFetch()) bootStatus("명단 %u명 받음", (unsigned)rosterCount);
+  else               bootStatus("명단을 받지 못했습니다");
   // 그림은 없는 것만 받는다. 이미 있으면 통신하지 않아 부팅이 늦어지지 않는다.
+  // (새로 받을 그림이 있으면 artDownload 가 '그림 받는 중' 으로 줄을 바꾼다)
   artSync();
   lastCfgFetch = millis();
 }
@@ -2848,6 +2940,8 @@ static void uidToStr(const uint8_t* uid, uint8_t len, char* out, size_t cap) {
 
 // 결과·오류를 몇 초 띄우고 원래 탭으로 돌아간다.
 #define OVERLAY_MS 3000
+// 헤더 띠 두 번 터치로 보는 시간 — 첫 누름 뒤 이 안에 한 번 더 누르면 두 번(학생 사진 모두 받기)
+#define HEAD_DOUBLE_MS 450
 // 내역 탭의 잔액 조회는 읽을 것이 여러 줄이라 조금 더 오래 둔다.
 #define WHO_OVERLAY_MS 5000
 
@@ -2941,6 +3035,159 @@ static int8_t attendanceCardIndex() {
 // 취소 단추를 눌렀을 때. 진행 중이던 것을 접고 대기로 돌아간다 —
 // 키링을 잘못 댔거나 다른 사람이 먼저 대 버렸을 때 쓰는 자리다.
 // (완료 화면에는 단추가 없다 — 시간이 지나면 저절로 돌아간다)
+// ── 헤더 띠 한 번 터치 ── 내역으로 가거나(끊겼으면 와이파이 설정) 대기로 돌아온다.
+// 두 번 터치(학생 사진 모두 받기)와 가르느라 loop 가 HEAD_DOUBLE_MS 만큼 기다린 뒤 부른다.
+static void headerTap(uint32_t now) {
+  // 끊겨 있으면 내역 대신 와이파이 설정으로 간다. 여기가 '끊김' 이라고 적혀
+  // 있는 자리이고, 끊긴 채로는 내역도 받아 오지 못한다 — 눌러서 할 수 있는
+  // 일이 그것뿐이라 그리로 보낸다.
+  if (WiFi.status() != WL_CONNECTED && tab != TAB_HISTORY) {
+    if (provisionMode()) afterOnline();
+    resetStep();
+    drawScreen();
+    lastActivity = millis();
+    return;
+  }
+  // 다시 누르면 대기 화면으로 돌아온다 — 띠 전체가 단추라 "나가는 문" 도
+  // 같은 자리여야 헤맬 일이 없다.
+  overlayUntil = 0;
+  resetStep();
+  sndMode();
+  if (tab == TAB_HISTORY) {
+    tab = TAB_MAIN;
+  } else {
+    tab = TAB_HISTORY;
+    // 열 때는 늘 가장 최근 묶음부터 — 지난번에 넘겨 둔 쪽에서 시작하면
+    // 방금 찍힌 것이 안 보여 "안 들어갔다" 로 읽힌다.
+    if (feedFetchMs == 0 || now - feedFetchMs > 30000 || feedPage != 0) {
+      drawFrame(); drawHeader();
+      historyLoad(0);
+    }
+  }
+  drawScreen();
+  lastActivity = millis();
+}
+
+// ── 학생 사진 모두 받기 (헤더 띠 두 번 터치) ──────────────────────
+// 평소에는 대기 중 조용할 때 한 장씩 받는다(photoSyncStep). 행사 전에 사진을 한꺼번에 올렸거나,
+// 리더를 새로 들여 사진이 하나도 없을 때 기다리지 않고 지금 다 받게 한다.
+// 명단을 새로 받고 → 사진이 있는 아이마다 파일을 확인해 없거나 크기가 틀린 것만 받는다(이름이 곧 해시라
+// 있으면 최신). 받는 동안 화면을 누르면 멈춘다. 끝나면 새로 받음·이미 있음·실패를 몇 초 띄운다.
+static void drawPhotoSync(const char* title, uint16_t done, uint16_t total, const char* name) {
+  clearContent();
+  const int cy = contentMid();
+  useFont(20);
+  tft.setTextDatum(MC_DATUM);
+  contentText(inkMain());
+  tft.drawString(title, tft.width() / 2, cy - 54);
+  useFont(14);
+  contentText(inkSub());
+  tft.drawString(name && name[0] ? name : " ", tft.width() / 2, cy - 24);
+
+  // 진행 막대
+  const int bx = BORDER + 28, bw = tft.width() - bx * 2, by = cy - 4, bh = 12;
+  const uint16_t line = lightBg() ? C_LINE : C_TABBG;
+  tft.drawRect(bx, by, bw, bh, line);
+  if (total) tft.fillRect(bx + 1, by + 1, (int)((bw - 2) * (uint32_t)done / total), bh - 2, inkEarn());
+
+  contentText(inkMuted());
+  tft.drawString("화면을 누르면 멈춥니다", tft.width() / 2, contentTop() + contentH() - 18);
+  useFont(0);
+  char n[16];
+  snprintf(n, sizeof(n), "%u / %u", (unsigned)done, (unsigned)total);
+  contentText(inkMain());
+  tft.drawString(n, tft.width() / 2, cy + 32, 4);
+}
+
+static void photoSyncAll() {
+  sndMode();
+  overlayUntil = 0;
+  resetStep();
+  tab = TAB_MAIN;
+  drawScreen();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    sndFail();
+    drawErrorScreen("와이파이에 연결되지 않았습니다");
+    overlayUntil = millis() + OVERLAY_MS;
+    return;
+  }
+  drawPhotoSync("명단 받는 중", 0, 0, "");
+  if (!rosterFetch()) {
+    sndFail();
+    drawErrorScreen("명단을 받지 못했습니다");
+    overlayUntil = millis() + OVERLAY_MS;
+    return;
+  }
+
+  uint16_t total = 0;
+  for (uint16_t i = 0; i < rosterCount; i++) if (roster[i].img[0]) total++;
+
+  // 두 번째 터치의 손가락이 아직 화면에 있으면 곧바로 '멈춤' 으로 읽힌다 — 뗄 때까지(최대 1초) 기다린다
+  uint16_t tx, ty;
+  for (uint32_t t0 = millis(); tft.getTouch(&tx, &ty) && millis() - t0 < 1000;) delay(20);
+
+  const size_t want = (size_t)PHOTO_PX * PHOTO_PX * 2;
+  uint16_t done = 0, got = 0, have = 0, failed = 0;
+  bool stopped = false;
+  uint32_t lastDraw = 0;
+  for (uint16_t i = 0; i < rosterCount; i++) {
+    const RosterEntry& r = roster[i];
+    if (!r.img[0]) continue;
+    done++;
+
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%s", ART_DIR, r.img);
+    size_t size = 0;
+    if (LittleFS.exists(path)) {
+      fs::File f = LittleFS.open(path, "r");
+      if (f) { size = f.size(); f.close(); }
+    }
+    if (size == want) {
+      have++;
+      if (millis() - lastDraw > 300) { drawPhotoSync("사진 확인 중", done, total, r.name); lastDraw = millis(); }
+    } else {
+      if (size) LittleFS.remove(path);       // 크기가 틀린 반쪽 파일 — 지우고 새로 받는다
+      drawPhotoSync("사진 받는 중", done, total, r.name);
+      lastDraw = millis();
+      ArtFile a;
+      a.base = 0;
+      strlcpy(a.file, r.img, sizeof(a.file));
+      a.w = PHOTO_PX; a.h = PHOTO_PX;
+      if (artDownloadFrom("/photo/device/", a)) got++;
+      else failed++;
+    }
+    if (tft.getTouch(&tx, &ty)) { stopped = true; break; }
+    ledUpdate(millis());
+  }
+  if (!stopped) photoCursor = rosterCount;   // 다 훑었다 — 조용할 때 받기는 할 일이 없다
+  artPrune();                                // 명단에서 빠진 아이의 옛 사진을 치운다(명단을 막 받았다)
+  Serial.printf("[사진] 모두 받기 — 새로 %u · 있음 %u · 실패 %u%s\n",
+                got, have, failed, stopped ? " (멈춤)" : "");
+
+  // 결과
+  clearContent();
+  const int cy = contentMid();
+  useFont(20);
+  tft.setTextDatum(MC_DATUM);
+  contentText(inkMain());
+  tft.drawString(stopped ? "사진 받기를 멈췄습니다" : "학생 사진을 받았습니다", tft.width() / 2, cy - 40);
+  useFont(14);
+  char l1[48], l2[48];
+  snprintf(l1, sizeof(l1), "새로 받음 %u장 · 이미 있음 %u장", (unsigned)got, (unsigned)have);
+  contentText(inkSub());
+  tft.drawString(total ? l1 : "사진을 올린 학생이 없습니다", tft.width() / 2, cy - 6);
+  if (failed) {
+    snprintf(l2, sizeof(l2), "받지 못함 %u장 — 다시 두 번 눌러 보세요", (unsigned)failed);
+    contentText(inkSpend());
+    tft.drawString(l2, tft.width() / 2, cy + 20);
+  }
+  useFont(0);
+  if (failed) sndFail(); else sndEarn();
+  overlayUntil = millis() + 4000;
+  lastActivity = millis();
+}
+
 static void onCancel() {
   sndMode();
   resetStep();
@@ -2983,6 +3230,15 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
 
   // ── 카드를 기다리는 중 ──
   if (step == STEP_CARD) {
+    // 같은 키링을 한 번 더 댄 것 — 이미 그 아이 화면이다. 예전에는 '등록되지 않은 카드입니다' 를 띄우고
+    // 그 키링을 미등록 카드로 서버에 알렸다(서버가 걸러 기록은 남지 않지만, 아이 앞에서 오류가 뜨고 0.7초 멈췄다).
+    if (ci < 0 && !strcmp(s, curUid)) return;
+    // 다른 아이의 키링 — 앞사람이 취소하지 않고 간 경우다. 그 아이로 바꿔 아래 키링 흐름을 탄다
+    if (ci < 0 && rosterHas(s)) {
+      step = STEP_IDLE;
+      curUid[0] = '\0'; curName[0] = '\0';
+      curBalanceKnown = true;
+    } else
     if (ci < 0) {                      // 카드가 아니거나 등록되지 않았다
       sndFail();
       drawErrorScreen("등록되지 않은 카드입니다");
@@ -3022,7 +3278,6 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
   const uint32_t tagT0 = millis();
   const bool early = !cfg.attendanceMode && rosterHas(s);
   if (early) {
-    sndMode();
     strlcpy(curUid, s, sizeof(curUid));
     strlcpy(curName, nameOf(s), sizeof(curName));
     curBalance = 0;
@@ -3033,6 +3288,7 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
     overlayUntil = 0;
     drawWaitCard();
     Serial.printf("[시간] 키링 → 이름 %lums\n", (unsigned long)(millis() - tagT0));
+    sndMode();                         // 확인음은 화면을 그린 뒤 — 소리가 끝날 때까지(45ms) 그리기를 붙잡지 않게
   } else {
     drawWorking();
   }
@@ -3115,6 +3371,13 @@ static void handleTag(const uint8_t* uid, uint8_t len) {
 // ══════════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // USB 가 PC 에 꽂혀 있는데 아무도 로그를 읽지 않으면(모니터를 닫았다든지) ESP32 코어는 쓸 때마다
+  // 최대 2초(100ms × 20번)를 기다린다. 태그 한 번에 로그가 여러 줄이라, 그 상태에서는 키링을 대고
+  // 화면이 뜨기까지 2초가 넘게 걸렸다(실측 2129ms, 모니터를 열면 128ms). 로그는 버려도 되니 기다리지 않는다.
+  // 충전기에만 꽂혀 있으면(호스트 없음) 원래 기다리지 않아 현장에서는 드러나지 않던 문제다.
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(200);
   Serial.println("\n=== TalentNfcReader 시작 ===");
 
@@ -3182,11 +3445,15 @@ void setup() {
     useFont(0);
   }
 
+  bootShowing = true;
+  bootStatus("와이파이 연결 중");
+
   wifiLoadSaved();
   ledUpdate(millis());                 // 연결 중 노랑을 곧바로 켠다(이어서 wifiTry 가 깜빡인다)
   if (!wifiConnectKnown(8000)) {
     // 알고 있는 것으로는 못 붙었다. 블루투스를 열고 휴대폰에서 넣어 줄 때까지 기다린다.
     Serial.println("WiFi 연결 실패 — 블루투스 설정 모드로 들어갑니다.");
+    bootShowing = false;               // 설정 화면이 켤 때 화면을 덮는다 — 그 위에 진행 줄을 그리지 않는다
     provisionMode();
   }
   if (WiFi.status() == WL_CONNECTED) {
@@ -3200,6 +3467,8 @@ void setup() {
                 cfgFromServer ? "서버" : "캐시/기본값", (long)cfg.talentStep,
                 cfg.sleepEnabled ? "켬" : "끔");
 
+  if (bootDownloads) bootStatus("그림 %u장 받음 · 리더 준비 중", (unsigned)bootDownloads);
+  else               bootStatus("리더 준비 중");
   Wire.begin(PIN_NFC_SDA, PIN_NFC_SCL);
   nfc.begin();
   uint32_t ver = nfc.getFirmwareVersion();
@@ -3214,6 +3483,8 @@ void setup() {
   }
 
   wifiWasOnline = WiFi.status() == WL_CONNECTED;
+  bootShowing = false;
+  useFont(0);                          // 진행 줄이 들고 있던 14px 을 내려놓는다 — 내장 폰트로 그리는 숫자가 있다
   drawScreen();
   lastActivity = millis();
 }
@@ -3228,7 +3499,34 @@ void loop() {
   // 정전식 패드 대신 디스플레이의 XPT2046 을 읽는다. getTouch() 는 눌린 동안
   // 계속 true 라, 디바운스로 한 번만 받는다.
   uint16_t tx, ty;
-  if (tft.getTouch(&tx, &ty) && now - lastTouchMs > cfg.touchDebounceMs) {
+  const bool touching = tft.getTouch(&tx, &ty);
+
+  // ── 헤더 띠: 한 번 = 내역, 두 번 = 학생 사진 모두 받기 ──
+  // 두 번을 세려면 '누른 채' 가 아니라 **누르는 순간**(떼었다가 다시 누름)을 세야 한다 — 디바운스로는
+  // 누른 채 있는 손가락도 몇 백 ms 마다 다시 눌림으로 들어온다. 첫 누름 뒤 HEAD_DOUBLE_MS 안에 한 번 더 누르면
+  // 두 번, 그 시간이 지나도록 없으면 한 번으로 처리한다(그래서 내역은 그만큼 늦게 열린다).
+  // 120ms 보다 짧게 이어진 누름은 한 번 누르는 사이 터치가 잠깐 끊긴 것으로 보고 세지 않는다.
+  static bool touchWasDown = false;
+  static uint32_t headTapMs = 0;
+  const bool pressEdge = touching && !touchWasDown;
+  touchWasDown = touching;
+  if (pressEdge && histHit(tx, ty)) {
+    lastTouchMs = now;
+    lastActivity = now;
+    if (headTapMs && now - headTapMs >= 120 && now - headTapMs <= HEAD_DOUBLE_MS) {
+      headTapMs = 0;
+      photoSyncAll();
+      return;
+    }
+    if (!headTapMs || now - headTapMs >= 120) headTapMs = now;
+  }
+  if (headTapMs && now - headTapMs > HEAD_DOUBLE_MS) {
+    headTapMs = 0;
+    headerTap(now);
+    return;
+  }
+
+  if (touching && !histHit(tx, ty) && now - lastTouchMs > cfg.touchDebounceMs) {
     lastTouchMs = now;
 
     // ── 아래쪽 취소 단추 ──
@@ -3237,38 +3535,7 @@ void loop() {
       onCancel();
       return;
     }
-    // 헤더의 내역 버튼 — 탭 줄 위에 있어 겹치지 않지만 순서를 정해 둔다.
-    if (histHit(tx, ty)) {
-      // 끊겨 있으면 내역 대신 와이파이 설정으로 간다. 여기가 '끊김' 이라고 적혀
-      // 있는 자리이고, 끊긴 채로는 내역도 받아 오지 못한다 — 눌러서 할 수 있는
-      // 일이 그것뿐이라 그리로 보낸다.
-      if (WiFi.status() != WL_CONNECTED && tab != TAB_HISTORY) {
-        if (provisionMode()) afterOnline();
-        resetStep();
-        drawScreen();
-        lastActivity = millis();
-        return;
-      }
-      // 다시 누르면 대기 화면으로 돌아온다 — 띠 전체가 단추라 "나가는 문" 도
-      // 같은 자리여야 헤맬 일이 없다.
-      overlayUntil = 0;
-      resetStep();
-      sndMode();
-      if (tab == TAB_HISTORY) {
-        tab = TAB_MAIN;
-      } else {
-        tab = TAB_HISTORY;
-        // 열 때는 늘 가장 최근 묶음부터 — 지난번에 넘겨 둔 쪽에서 시작하면
-        // 방금 찍힌 것이 안 보여 "안 들어갔다" 로 읽힌다.
-        if (feedFetchMs == 0 || now - feedFetchMs > 30000 || feedPage != 0) {
-          drawFrame(); drawHeader();
-          historyLoad(0);
-        }
-      }
-      drawScreen();
-      lastActivity = now;
-      return;
-    }
+    // 헤더 띠는 위에서 따로 받는다(한 번·두 번 터치)
 
     // ── 내역 탭의 페이지 띠 ──
     // 위는 최근 쪽, 아래는 예전 쪽. 끝에 닿았으면 아무 일도 하지 않는다 —
