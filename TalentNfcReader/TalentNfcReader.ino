@@ -490,7 +490,7 @@ static void wifiForgetCreds() {
 }
 
 // 붙어 볼 와이파이 후보를 순서대로 채운다(비었거나 앞과 같은 SSID 는 뺀다). 돌려주는 값은 개수.
-static uint8_t wifiCandidates(const char* ss[3], const char* pw[3]) {
+static uint8_t wifiCandidates(const char* ss[4], const char* pw[4]) {
   uint8_t n = 0;
   auto add = [&](const char* s, const char* p) {
     if (!s || !s[0]) return;
@@ -498,6 +498,9 @@ static uint8_t wifiCandidates(const char* ss[3], const char* pw[3]) {
     ss[n] = s; pw[n] = p; n++;
   };
   add(wifiSsid, wifiPass);
+#if defined(WIFI_SSID_0) && defined(WIFI_PASSWORD_0)
+  add(WIFI_SSID_0, WIFI_PASSWORD_0);        // 교회(리더를 두는 곳) — 구워 넣은 것 중 가장 먼저
+#endif
   add(WIFI_SSID, WIFI_PASSWORD);
 #if defined(WIFI_SSID_2) && defined(WIFI_PASSWORD_2)
   add(WIFI_SSID_2, WIFI_PASSWORD_2);
@@ -522,8 +525,9 @@ static bool wifiTry(const char* ssid, const char* pass, uint32_t waitMs) {
   return WiFi.status() == WL_CONNECTED;
 }
 
-// 알고 있는 것으로: 저장된 것(블루투스로 넣은 것) → 구워 넣은 1순위(WIFI_SSID) → 2순위(WIFI_SSID_2).
-// 2순위는 ChurchSecrets.h 에 있을 때만 쓴다(없는 PC 에서도 그대로 빌드된다). 같은 SSID 는 한 번만 시도한다.
+// 알고 있는 것으로: 저장된 것(블루투스로 넣은 것) → 구워 넣은 1순위(WIFI_SSID_0) → 2순위(WIFI_SSID) → 3순위(WIFI_SSID_2).
+// _0 · _2 는 ChurchSecrets.h 에 있을 때만 쓴다(없는 PC 에서도 그대로 빌드된다). 같은 SSID 는 한 번만 시도한다.
+// WIFI_SSID 는 다른 스케치도 함께 쓰는 값이라 그대로 두고, 리더만 먼저 붙을 곳은 _0 으로 따로 둔다.
 //
 // FORCE_WIFI_SETUP 으로 구우면 둘 다 건너뛰고 곧장 실패한다 — 블루투스 설정 화면을
 // 손으로 확인하려고 둔 시험용 문이다(NO_WIFI=1 ./build.sh). 공유기를 꺼 보지 않고도
@@ -534,7 +538,7 @@ static bool wifiConnectKnown(uint32_t waitMs) {
   Serial.println("[와이파이] FORCE_WIFI_SETUP — 알고 있는 인증정보를 모두 건너뜁니다(시험용 빌드)");
   return false;
 #else
-  const char* ss[3]; const char* pw[3];
+  const char* ss[4]; const char* pw[4];
   const uint8_t n = wifiCandidates(ss, pw);
   for (uint8_t i = 0; i < n; i++) {
     Serial.printf("[와이파이] %u순위 시도 %s\n", (unsigned)(i + 1), ss[i]);
@@ -3734,7 +3738,7 @@ void loop() {
   const bool online = WiFi.status() == WL_CONNECTED;
   if (!online && now - lastWifiRetry > 30000) {
     lastWifiRetry = now;
-    const char* ss[3]; const char* pw[3];
+    const char* ss[4]; const char* pw[4];
     const uint8_t n = wifiCandidates(ss, pw);
     if (n) {
       const uint8_t i = wifiRetryIdx++ % n;

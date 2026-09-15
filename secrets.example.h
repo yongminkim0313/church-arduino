@@ -7,7 +7,11 @@
 #define WIFI_SSID     "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 
-// (선택) 2순위 와이파이 — 1순위에 못 붙으면 이것으로 붙어 본다. 없으면 지워도 된다
+// (선택) TalentNfcReader 가 가장 먼저 붙어 볼 와이파이 — 없으면 지워도 된다
+#define WIFI_SSID_0     "first-ssid"
+#define WIFI_PASSWORD_0 "first-password"
+
+// (선택) TalentNfcReader 가 마지막으로 붙어 볼 와이파이 — 없으면 지워도 된다
 #define WIFI_SSID_2     "second-ssid"
 #define WIFI_PASSWORD_2 "second-password"
 
