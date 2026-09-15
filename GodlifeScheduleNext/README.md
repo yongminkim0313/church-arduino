@@ -63,8 +63,33 @@ jdServer 의 `godlife/GodlifeManager.js` 가 Firebase RTDB 를 읽어 돌려준�
 | 위(GPIO35) | 다음 일정 → 그다음 → … → 목록 화면 → 처음으로 |
 | 아래(GPIO0) | 지금 바로 새로고침 |
 
+| 터치(GPIO32) | 꺼진 화면을 켠다. 켜져 있으면 화면 끄기까지의 5분을 다시 센다 |
+
 **화면이 꺼져 있을 때의 첫 눌림은 켜기로만 쓴다.** 불을 켜려던 손짓이 일정을
 넘기거나 새로고침을 돌리지 않도록 그 한 번은 삼킨다.
+
+## 터치로 화면 깨우기
+
+T-Display 화면에는 터치 패널이 없다. 대신 ESP32 의 **정전식 터치 핀 T9(GPIO32)** 을 쓴다.
+헤더의 `32` 번 핀에 **구리 테이프 · 금속판 · 짧은 전선**을 이으면 끝이다(다른 부품 없음).
+케이스 안쪽에 붙인 테이프도 얇은 플라스틱(1~3mm) 너머로 잡힌다.
+
+- 켤 때 8번 읽어 **기준값**을 잡는다. 켜는 순간에는 손을 대지 않는다.
+- 기준보다 `TOUCH_DROP_PCT`(15%) 이상 떨어진 값이 **두 번 연달아**(약 0.2초) 읽히면 터치다.
+  떼었다고 보는 문턱은 그 절반(7%)이라 경계에서 떨지 않는다.
+- 대지 않을 때는 기준값이 천천히 따라간다(온도·습기).
+- **5초 넘게 계속 낮으면 그 값을 새 기준으로 잡는다.** 켜진 채로 전선·테이프를 붙이면
+  값이 내려앉아 '계속 대고 있음' 으로 굳는데, 그걸 풀어 준다.
+- 100ms 마다 한 번(1회 약 0.5ms) 읽으므로 부하는 거의 없다.
+
+| 값 | 기본 | 뜻 |
+|----|------|-----|
+| `TOUCH_PIN` | 32 | 터치 핀. 33(T8)·27(T7)·15(T3)·13(T4) 도 비어 있다 |
+| `TOUCH_DROP_PCT` | 15 % | 저절로 켜지면 올리고, 대도 안 켜지면 내린다 |
+| `TOUCH_LOG` | false | true 면 2초마다 `[터치] 값 · 기준 · 문턱` 을 찍는다 — 감도 맞출 때 |
+
+실기(아무것도 안 붙인 핀, USB 급전)에서 기준값 **1977**, 흔들림 **±15(1% 안쪽)** 였다.
+전선은 짧게(20~30cm 안쪽) — 길면 잡음이 늘어 저절로 켜질 수 있다.
 
 ## 마퀴
 
@@ -141,6 +166,13 @@ ASCII · 한글 음절 · `--chars` 로 넣은 기호. 상용 2,350자 밖 음�
 ```bash
 arduino-cli compile GodlifeScheduleNext
 arduino-cli compile --upload GodlifeScheduleNext
+```
+
+**업로드가 `Unable to verify flash chip connection` 으로 실패하면** 921600 보드레이트를
+USB 칩이 못 버티는 것이다. 속도를 낮춰 올린다:
+
+```bash
+arduino-cli compile --upload GodlifeScheduleNext -b esp32:esp32:esp32:PartitionScheme=huge_app,UploadSpeed=460800
 ```
 
 TFT_eSPI 는 `Setup25_TTGO_T_Display.h` 활성화가 필요하다 — [docs/TFT_eSPI_setup.md](../docs/TFT_eSPI_setup.md)
