@@ -7,6 +7,10 @@
 #define WIFI_SSID     "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 
+// (선택) 2순위 와이파이 — 1순위에 못 붙으면 이것으로 붙어 본다. 없으면 지워도 된다
+#define WIFI_SSID_2     "second-ssid"
+#define WIFI_PASSWORD_2 "second-password"
+
 // 센서값 수집 서버
 #define SENSOR_POST_URL "https://jesusdream.kr/api/sensor"
 

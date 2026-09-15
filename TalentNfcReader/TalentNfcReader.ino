@@ -489,6 +489,22 @@ static void wifiForgetCreds() {
   Serial.println("[와이파이] 저장해 둔 설정을 지웠습니다");
 }
 
+// 붙어 볼 와이파이 후보를 순서대로 채운다(비었거나 앞과 같은 SSID 는 뺀다). 돌려주는 값은 개수.
+static uint8_t wifiCandidates(const char* ss[3], const char* pw[3]) {
+  uint8_t n = 0;
+  auto add = [&](const char* s, const char* p) {
+    if (!s || !s[0]) return;
+    for (uint8_t i = 0; i < n; i++) if (!strcmp(ss[i], s)) return;
+    ss[n] = s; pw[n] = p; n++;
+  };
+  add(wifiSsid, wifiPass);
+  add(WIFI_SSID, WIFI_PASSWORD);
+#if defined(WIFI_SSID_2) && defined(WIFI_PASSWORD_2)
+  add(WIFI_SSID_2, WIFI_PASSWORD_2);
+#endif
+  return n;
+}
+
 static void ledUpdate(uint32_t now);   // 상태 LED(아래 '상태 LED' 절) — 붙기를 기다리는 동안 노랑을 깜빡인다
 
 // 한 번 붙어 본다. 실패해도 라디오는 켜 둔 채로 둔다 — 곧 다른 값으로 다시 시도한다.
@@ -506,7 +522,8 @@ static bool wifiTry(const char* ssid, const char* pass, uint32_t waitMs) {
   return WiFi.status() == WL_CONNECTED;
 }
 
-// 알고 있는 것으로: 저장된 것 → 구워 넣은 것.
+// 알고 있는 것으로: 저장된 것(블루투스로 넣은 것) → 구워 넣은 1순위(WIFI_SSID) → 2순위(WIFI_SSID_2).
+// 2순위는 ChurchSecrets.h 에 있을 때만 쓴다(없는 PC 에서도 그대로 빌드된다). 같은 SSID 는 한 번만 시도한다.
 //
 // FORCE_WIFI_SETUP 으로 구우면 둘 다 건너뛰고 곧장 실패한다 — 블루투스 설정 화면을
 // 손으로 확인하려고 둔 시험용 문이다(NO_WIFI=1 ./build.sh). 공유기를 꺼 보지 않고도
@@ -517,8 +534,12 @@ static bool wifiConnectKnown(uint32_t waitMs) {
   Serial.println("[와이파이] FORCE_WIFI_SETUP — 알고 있는 인증정보를 모두 건너뜁니다(시험용 빌드)");
   return false;
 #else
-  if (wifiSsid[0] && wifiTry(wifiSsid, wifiPass, waitMs)) return true;
-  if (strcmp(wifiSsid, WIFI_SSID) != 0 && wifiTry(WIFI_SSID, WIFI_PASSWORD, waitMs)) return true;
+  const char* ss[3]; const char* pw[3];
+  const uint8_t n = wifiCandidates(ss, pw);
+  for (uint8_t i = 0; i < n; i++) {
+    Serial.printf("[와이파이] %u순위 시도 %s\n", (unsigned)(i + 1), ss[i]);
+    if (wifiTry(ss[i], pw[i], waitMs)) return true;
+  }
   return false;
 #endif
 }
@@ -3707,12 +3728,20 @@ void loop() {
   // 걸어만 두고 기다리지 않는다 — 여기서 멈추면 그동안 터치도 태깅도 굳는다.
   // (비밀번호가 아예 바뀐 경우는 이걸로 안 된다. 그때는 헤더의 '끊김' 을 눌러
   //  블루투스 설정 화면으로 간다)
+  // 후보(저장된 것 → 1순위 → 2순위)를 30초마다 하나씩 번갈아 건다 — 한쪽 공유기만 살아 있어도 돌아온다.
   static uint32_t lastWifiRetry = 0;
+  static uint8_t wifiRetryIdx = 0;
   const bool online = WiFi.status() == WL_CONNECTED;
   if (!online && now - lastWifiRetry > 30000) {
     lastWifiRetry = now;
-    WiFi.begin(wifiSsid[0] ? wifiSsid : WIFI_SSID,
-               wifiSsid[0] ? wifiPass : WIFI_PASSWORD);
+    const char* ss[3]; const char* pw[3];
+    const uint8_t n = wifiCandidates(ss, pw);
+    if (n) {
+      const uint8_t i = wifiRetryIdx++ % n;
+      Serial.printf("[와이파이] 끊김 — %u순위 %s 로 다시 붙어 봅니다\n", (unsigned)(i + 1), ss[i]);
+      WiFi.disconnect();
+      WiFi.begin(ss[i], pw[i]);
+    }
   }
   // 붙었다·끊겼다가 바뀌는 순간에만 손을 댄다.
   if (online != wifiWasOnline) {
