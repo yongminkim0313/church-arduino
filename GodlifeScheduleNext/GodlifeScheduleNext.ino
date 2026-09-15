@@ -35,7 +35,7 @@
 //   3) 백라이트가 켜고/끄기뿐 — PWM 으로 60% 만 줘도 눈에는 거의 같다.
 //   4) 마퀴가 영영 흐르며 30fps 스프라이트 푸시를 멈추지 않았다.
 // 넷을 고쳐 45~60mA 대로 내렸다. 손잡이는 CPU_MHZ · BL_DUTY_ON · BL_IDLE_MS ·
-// MARQ_ROUNDS 네 개다. 무동작 5분이면 화면을 끄고 버튼을 누르면 다시 켠다.
+// MARQ_ROUNDS 네 개다. 무동작 5분이면 화면을 끄고 버튼을 누르거나 터치 핀(GPIO32)에 손을 대면 다시 켠다.
 //
 // 필요 라이브러리: TFT_eSPI(Setup25) · ArduinoJson 7.x · ChurchSecrets
 // 파티션: Huge APP(3MB) — sketch.yaml 에 박아뒀다.
@@ -69,6 +69,17 @@
 #define BL_CHANNEL  0   // 코어 2.x 의 LEDC 채널 (3.x 는 핀으로 직접 잡는다)
 #define BTN_TOP    35   // 입력 전용 핀(내부 풀업 없음, 보드에 외부 풀업 있음)
 #define BTN_BOTTOM  0
+
+// ── 터치로 화면 깨우기 ────────────────────────────────────────────
+// T-Display 화면에는 터치 패널이 없다. 대신 ESP32 의 정전식 터치 핀(T9 = GPIO32)에
+// 구리 테이프·금속판·짧은 전선을 이어 두면 손을 대는 것만으로 꺼진 화면을 켠다.
+// 케이스 안쪽에 붙인 테이프도 얇은 플라스틱(1~3mm) 너머로 잡힌다.
+// ESP32(클래식)의 touchRead 는 손을 대면 값이 '떨어진다'. 켤 때 잡은 기준값보다
+// TOUCH_DROP_PCT 이상 떨어지면 터치로 본다. 핀에 아무것도 없으면 그냥 조용하다.
+static const uint8_t  TOUCH_PIN      = 32;
+static const uint8_t  TOUCH_DROP_PCT = 15;     // 기준보다 이만큼(%) 떨어지면 터치. 실기 잡음은 1% 안쪽(1977±15). 오작동이면 올리고, 안 잡히면 내린다
+static const uint32_t TOUCH_POLL_MS  = 100;    // 한 번 읽는 데 약 0.5ms — 100ms 마다면 부하는 거의 없다
+static const bool     TOUCH_LOG      = false;  // true 면 2초마다 값/기준을 찍는다(감도 맞출 때)
 
 // ── 전력 ──────────────────────────────────────────────────────────
 // 상시 급전이라도 이 기기는 하루 종일 켜져 있다. 소모의 대부분은 (1) WiFi RF,
@@ -668,6 +679,62 @@ static void screenSleepIfIdle() {
   Serial.println("[화면] 무동작 — 끔");
 }
 
+// ── 터치 ──────────────────────────────────────────────────────────
+static float    touchBase = 0;      // 손을 대지 않았을 때의 값(천천히 따라간다)
+static bool     touchOk   = false;  // 기준값을 잡았는가
+static bool     touchDown = false;  // 지금 대고 있는가(떼기 전까지 한 번만 친다)
+static uint8_t  touchHits = 0;      // 연달아 낮게 읽힌 횟수 — 잡음 한 번으로 켜지지 않게
+static uint32_t touchDownAt = 0;    // 대기 시작한 시각 — 너무 오래면 기준을 다시 잡는다
+
+static void touchInit() {
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < 8; i++) { sum += touchRead(TOUCH_PIN); delay(10); }
+  touchBase = sum / 8.0f;
+  // 0 에 가까우면 핀이 GND 에 붙었거나 읽지 못한 것 — 늘 '터치' 로 보이므로 쓰지 않는다
+  touchOk = (touchBase >= 10);
+  Serial.printf("[터치] GPIO%u 기준값 %.0f  %s\n", TOUCH_PIN, touchBase, touchOk ? "사용" : "끔(값이 너무 낮음)");
+}
+
+// 대는 순간 한 번 화면을 깨운다. 켜져 있을 때는 무동작 타이머만 늘린다(screenWake 가 둘 다 한다).
+static void handleTouch() {
+  static uint32_t lastPoll = 0, lastLog = 0;
+  if (!touchOk || millis() - lastPoll < TOUCH_POLL_MS) return;
+  lastPoll = millis();
+
+  const float v    = touchRead(TOUCH_PIN);
+  const float on   = touchBase * (100 - TOUCH_DROP_PCT) / 100.0f;
+  const float off  = touchBase * (100 - TOUCH_DROP_PCT / 2) / 100.0f;   // 떼었다고 볼 문턱(히스테리시스)
+
+  if (TOUCH_LOG && millis() - lastLog >= 2000) {
+    lastLog = millis();
+    Serial.printf("[터치] 값 %.0f  기준 %.0f  문턱 %.0f\n", v, touchBase, on);
+  }
+
+  if (!touchDown) {
+    if (v < on) {
+      if (++touchHits >= 2) {        // 두 번 연달아(약 0.2초) 낮아야 터치
+        touchDown   = true;
+        touchDownAt = millis();
+        touchHits   = 0;
+        Serial.printf("[터치] 값 %.0f / 기준 %.0f → %s\n", v, touchBase, blOn ? "타이머 연장" : "화면 켬");
+        screenWake();
+      }
+    } else {
+      touchHits = 0;
+      // 대지 않을 때만 기준을 따라간다 — 온도·습기로 조금씩 흔들리는 값을 쫓는다
+      touchBase += (v - touchBase) * 0.02f;
+    }
+  } else if (v > off) {
+    touchDown = false;
+  } else if (millis() - touchDownAt > 5000) {
+    // 5초 넘게 '대고 있음' — 손이 아니라 켜진 채로 전선·테이프를 붙였거나 놓인 자리가
+    // 바뀐 것이다. 그대로 두면 떼기 문턱을 영영 못 넘어 터치가 먹통이 되니 지금 값을 새 기준으로 삼는다.
+    touchBase = v;
+    touchDown = false;
+    Serial.printf("[터치] 계속 낮음 — 기준값을 %.0f 로 다시 잡음\n", v);
+  }
+}
+
 static void handleButtons() {
   static uint32_t lockUntil = 0;
   if (millis() < lockUntil) return;
@@ -716,6 +783,7 @@ void setup() {
 
   pinMode(BTN_TOP, INPUT);            // GPIO35 는 입력 전용 — 보드의 외부 풀업을 쓴다
   pinMode(BTN_BOTTOM, INPUT_PULLUP);
+  touchInit();                        // 켤 때 손을 대고 있지 않아야 기준값이 맞다(대고 있었어도 떼면 천천히 따라간다)
 
   tft.init();
   backlightInit();                    // init() 이 GPIO4 를 HIGH 로 만든 '뒤에' 잡는다
@@ -782,6 +850,7 @@ void loop() {
   static uint32_t lastWifi = 0;
 
   handleButtons();
+  handleTouch();
 
   // 무선이 끊겼으면 조용히 다시 붙는다
   if (WiFi.status() != WL_CONNECTED && millis() - lastWifi > 10000) {
