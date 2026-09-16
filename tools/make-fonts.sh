@@ -30,6 +30,28 @@ echo "▶ TalentNfcReader/FontKR20.h 생성 중..."
 python3 tools/ttf2vlw.py "$TTF" --size 20 --ks2350 --preset ui \
     --var FontKR20 -o TalentNfcReader/FontKR20.h
 
+# 달란트 리더(가이션 JC3248W535 판) — 화면이 320×480 이라 한 단계씩 크게 쓴다.
+# 본문 20px · 이름과 안내문 24px, 그리고 큰 숫자 두 벌(원본의 내장 폰트 4·6번 자리).
+# 앱 칸이 4MB 라 한글 폰트 두 벌(20+24 = 2.1MB)이 들어가는 한계에 가깝다 —
+# 더 키우려면 파티션표(partitions.csv)부터 손볼 것.
+# 가운뎃점(·)은 문구에 쓰이는데 preset 에 없어 따로 넣는다.
+echo "▶ TalentNfcReader_JC3245/FontKR20.h · FontKR24.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 20 --ks2350 --preset ui --chars "·" \
+    --var FontKR20 -o TalentNfcReader_JC3245/FontKR20.h
+python3 tools/ttf2vlw.py "$TTF" --size 24 --ks2350 --preset ui --chars "·" \
+    --var FontKR24 -o TalentNfcReader_JC3245/FontKR24.h
+echo "▶ TalentNfcReader_JC3245/FontNum34.h · FontNum64.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 34 --no-ascii --chars "0123456789.-+P " \
+    --var FontNum34 -o TalentNfcReader_JC3245/FontNum34.h
+python3 tools/ttf2vlw.py "$TTF" --size 64 --no-ascii --chars "0123456789.-+P " \
+    --var FontNum64 -o TalentNfcReader_JC3245/FontNum64.h
+
+# 달란트 리더(LILYGO T-RGB 원형 판) — 쓰는 폰트가 JC3245 판과 같다. 그대로 복사한다.
+echo "▶ TalentNfcReader_CST820/ 폰트 복사 중..."
+for f in FontKR20.h FontKR24.h FontNum34.h FontNum64.h; do
+  cp "TalentNfcReader_JC3245/$f" "TalentNfcReader_CST820/$f"
+done
+
 # GodlifeScheduleNext — KS X 1001 상용 2,350자 16px + 큰 숫자 30px.
 # 달란트 리더와 같은 이유다. 글리프 메트릭이 RAM 을 먹는데(글리프당 12B)
 # 전체면 135KB 라 HTTPS 핸드셰이크가 쓸 힙이 남지 않는다. 상용 2,350자면 29KB.

@@ -1,0 +1,25 @@
+# TalentNfcReader 전용 파티션표 (16MB 플래시)
+#
+# 이 파일은 build.sh 의 PartitionScheme=custom 때문에 쓰인다. esp32 코어가 들고 있는
+# 표 중에는 "esp32s3 + 큰 SPIFFS" 가 마땅한 것이 없었다 —
+#   huge_app          앱 3MB / SPIFFS 0.875MB   ← 예전에 쓰던 것. 그림이 들어가면 먼저 찬다
+#   app3M_fat9M_16MB  앱 3MB / FATFS 9.9MB      ← FAT 이라 LittleFS 를 못 쓴다
+#   esp_sr_16         앱 3MB / SPIFFS 6MB       ← 쓰지도 않는 model 3.9MB 를 끼고 있다
+#   default_16MB      esp32s3 메뉴에는 없다(esp32 전용)
+#
+# 그래서 직접 잡는다. OTA 는 예전 huge_app 때와 마찬가지로 쓰지 않으므로 app 은 하나다.
+#
+# 앱 4MB  — 한글 2350자 폰트(473KB)를 안고도 지금 2MB 남짓이다. 여유를 두 배로 둔다.
+# SPIFFS 11.875MB — LittleFS. 서버에서 받는 그림이 들어간다.
+#     배경     232x218x2 = 99KB / 장
+#     포인트   108x122x2 = 26KB / 장
+#     메뉴항목 108x136x2 = 29KB / 장 (최대 16개)
+#   다 합쳐도 1MB 안쪽이라, 앞으로 무엇이 늘든 이 칸이 먼저 차는 일은 없다.
+#
+# 주의: 오프셋이 바뀌면 기존 LittleFS 내용은 사라진다. 그림은 부팅 때 다시 받으므로
+# 문제되지 않지만, NVS(설정 캐시)는 0x9000 그대로라 유지된다.
+# 이름,    타입, 서브타입,  오프셋,    크기
+nvs,      data, nvs,     0x9000,  0x5000,
+app0,     app,  factory, 0x10000, 0x400000,
+spiffs,   data, spiffs,  0x410000,0xBE0000,
+coredump, data, coredump,0xFF0000,0x10000,
