@@ -27,6 +27,9 @@ secrets.h
 # 로컬 설정
 **/sketch.yaml.local
 
+# 참고용으로 받아 둔 남의 저장소(LILYGO 예제 등) — 크고, 우리 소스가 아니다
+sample/
+
 # macOS
 .DS_Store
 ._*
