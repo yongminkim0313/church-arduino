@@ -112,13 +112,19 @@ static const int16_t Y_TOP   = 0;    static const int16_t H_TOP   = 36;   // 상
 static const int16_t Y_HERO  = 40;   static const int16_t H_HERO  = 108;  // 시각 카드 (40..148)
 static const int16_t Y_BIG   = 40;   static const int16_t H_BIG   = 76;   //   큰 시각 · D-day
 static const int16_t Y_META  = 116;  static const int16_t H_META  = 32;   //   날짜 · 남은 시간
-static const int16_t Y_CARD  = 152;  static const int16_t H_CARD  = 176;  // 일정 카드 (152..328)
-static const int16_t Y_TITLE = 152;  static const int16_t H_TITLE = 32;   //   제목 두 줄
-static const int16_t Y_SUB   = 216;  static const int16_t H_SUB   = 28;   //   기관 · 준비물 개수 딱지
-static const int16_t Y_MEMO  = 244;  static const int16_t H_MEMO  = 26;   //   메모 두 줄
-static const int16_t Y_PREP  = 296;  static const int16_t H_PREP  = 32;   //   준비물 이름 띠
-static const int16_t Y_NEXT  = 332;  static const int16_t H_NEXT  = 26;   // '이어지는 일정' 소제목
-static const int16_t Y_FOOT  = 358;  static const int16_t H_FOOT  = 30;   // 이어지는 일정 네 줄 (358..478)
+static const int16_t Y_CARD  = 152;                                       // 일정 카드가 시작하는 곳
+static const int16_t H_TITLE = 32;   // 카드 안 줄 높이 — 제목 두 줄
+static const int16_t H_SUB   = 28;   //                 기관 · 준비물 개수 딱지
+static const int16_t H_MEMO  = 26;   //                 메모 두 줄
+static const int16_t H_PREP  = 32;   //                 준비물 이름 띠
+static const int16_t H_NEXT  = 26;   // '이어지는 일정' 소제목
+static const int16_t H_FOOT_MIN = 30, H_FOOT_MAX = 46;   // 이어지는 일정 딱지
+
+// 아래 넷은 일정마다 달라진다 — **빈 줄은 접기 때문이다**(layout()).
+// 제목이 한 줄로 끝나거나 메모가 없는 일정이 흔한데, 자리를 고정해 두면 그만큼
+// 흰 칸이 그대로 남는다. 카드를 줄이고 아래를 끌어올린다.
+// 다 찼을 때가 예전과 같은 자리다(카드 176 · 소제목 332 · 딱지 358 부터 30 씩).
+static int16_t H_CARD = 176, Y_NEXT = 332, Y_FOOT = 358, H_FOOT = H_FOOT_MIN;
 
 // 목록 화면 — 상태 알약 아래로 일정마다 세 줄짜리 카드 한 장.
 static const int16_t Y_LIST       = H_TOP;
@@ -427,6 +433,7 @@ static void fmtListWhen(const Item& it, char* out, size_t cap) {
 static char lnTitle[2][MARQ_TEXT_MAX];
 static char lnMemo[2][MARQ_TEXT_MAX];
 static char lnSub[96];
+static char lnPrep[MARQ_TEXT_MAX];
 static char lnFootDd[SCHEDULE_LIMIT][16];
 static char lnFoot[SCHEDULE_LIMIT][MARQ_TEXT_MAX];
 static char lnListWhen[MAX_ITEMS][MARQ_TEXT_MAX];
@@ -442,9 +449,26 @@ static void foldTwo(const char* src, int16_t maxW, uint8_t font,
   copyUtf8(lines[1], MARQ_TEXT_MAX, rest);
 }
 
+// 빈 줄을 접은 카드 높이와, 그에 따라 밀려 올라오는 아래쪽 자리를 정한다.
+// 글이 바뀔 때만(buildLines) 한 번 셈한다 — 터치도 이 값을 보고 어느 딱지인지 안다.
+static void layout() {
+  H_CARD = H_TITLE;                      // 제목 첫 줄은 언제나 있다
+  if (lnTitle[1][0]) H_CARD += H_TITLE;
+  if (lnSub[0])      H_CARD += H_SUB;
+  if (lnMemo[0][0])  H_CARD += H_MEMO;
+  if (lnMemo[1][0])  H_CARD += H_MEMO;
+  if (lnPrep[0])     H_CARD += H_PREP;
+
+  Y_NEXT = Y_CARD + H_CARD + 4;
+  Y_FOOT = Y_NEXT + H_NEXT;
+  // 남은 자리는 딱지에 나눠 준다 — 줄이 적은 일정일수록 딱지가 도톰해져 누르기 쉽다
+  const int16_t h = (int16_t)((SCR_H - 2 - Y_FOOT) / SCHEDULE_LIMIT);
+  H_FOOT = h < H_FOOT_MIN ? H_FOOT_MIN : (h > H_FOOT_MAX ? H_FOOT_MAX : h);
+}
+
 static void buildLines() {
   const int16_t w = X_CR - X_CL;   // 카드 안에서 접는다
-  lnSub[0] = '\0';
+  lnSub[0] = lnPrep[0] = '\0';
   for (uint8_t i = 0; i < 2; i++) { lnTitle[i][0] = '\0'; lnMemo[i][0] = '\0'; }
   for (uint8_t i = 0; i < SCHEDULE_LIMIT; i++) { lnFootDd[i][0] = '\0'; lnFoot[i][0] = '\0'; }
   for (uint8_t i = 0; i < MAX_ITEMS; i++) lnListWhen[i][0] = '\0';
@@ -454,6 +478,7 @@ static void buildLines() {
     foldTwo(it.title, w, F_TITLE, lnTitle);
     foldTwo(it.memo,  w, F_BODY,  lnMemo);
     fmtSub(it, lnSub, sizeof(lnSub));
+    if (it.prepTotal > 0) copyUtf8(lnPrep, sizeof(lnPrep), it.prep);
   } else {
     copyUtf8(lnTitle[0], MARQ_TEXT_MAX,
              haveData ? "다가오는 일정이 없습니다" : "일정을 불러오는 중입니다");
@@ -469,6 +494,8 @@ static void buildLines() {
   }
   for (uint8_t i = 0; i < itemCount && i < MAX_ITEMS; i++)
     fmtListWhen(items[i], lnListWhen[i], sizeof(lnListWhen[i]));
+
+  layout();          // 줄이 정해졌으니 카드 높이와 아래쪽 자리를 다시 잡는다
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -548,39 +575,53 @@ static void renderMain(bool force) {
   drawRow(Y_META, H_META, COL_BG, metaBox, rw ? 2 : 1, metaSeg, 2, force);
 
   // ── 일정 카드 ── 제목 두 줄 · 딱지 · 메모 두 줄 · 준비물
-  // 카드와 왼쪽 크레용 띠는 여섯 줄 모두에 같이 넘긴다 — 줄마다 제 몫만 칠해져
-  // 이어 붙으면 한 장이 된다.
-  const Box card  = { COL_CARD, X_PAD, Y_CARD, X_CW, H_CARD, R_CARD };
-  const Box tab   = { dark, X_PAD, (int16_t)(Y_CARD + 8), 12, (int16_t)(H_CARD - 16), R_TAB };
-  const Box cd[]  = { card, tab };
+  // **빈 줄은 건너뛴다.** 그만큼 카드가 짧아지고(layout) 아래가 올라붙는다.
+  // 카드와 왼쪽 크레용 띠는 모든 줄에 같이 넘긴다 — 줄마다 제 몫만 칠해져 한 장이 된다.
+  const Box card = { COL_CARD, X_PAD, Y_CARD, X_CW, H_CARD, R_CARD };
+  const Box tab  = { dark, X_PAD, (int16_t)(Y_CARD + 8), 12, (int16_t)(H_CARD - 16), R_TAB };
+  const Box cd[] = { card, tab };
+  int16_t cy = Y_CARD;
 
   const Seg t0[] = { { M_TITLE0, lnTitle[0], X_CL, X_CR, AL_LEFT, COL_TXT, F_TITLE } };
-  const Seg t1[] = { { M_TITLE1, lnTitle[1], X_CL, X_CR, AL_LEFT, COL_TXT, F_TITLE } };
-  drawRow(Y_TITLE,           H_TITLE, COL_BG, cd, 2, t0, 1, force);
-  drawRow(Y_TITLE + H_TITLE, H_TITLE, COL_BG, cd, 2, t1, 1, force);
+  drawRow(cy, H_TITLE, COL_BG, cd, 2, t0, 1, force);
+  cy += H_TITLE;
+
+  if (lnTitle[1][0]) {
+    const Seg t1[] = { { M_TITLE1, lnTitle[1], X_CL, X_CR, AL_LEFT, COL_TXT, F_TITLE } };
+    drawRow(cy, H_TITLE, COL_BG, cd, 2, t1, 1, force);
+    cy += H_TITLE;
+  }
 
   // 기관 · 준비물 개수 — 글 길이에 맞춘 작은 딱지.
   // 폭은 **본문 폰트로** 재야 한다 — 바로 위 제목 줄이 24px 를 끼워 두고 갔다.
-  useFont(F_BODY);
-  int16_t sw = lnSub[0] ? (int16_t)(tft.textWidth(lnSub) + 22) : 0;
-  if (sw > X_CR - X_CL) sw = X_CR - X_CL;
-  const Box sbBox[] = { card, tab,
-    { light, X_CL, (int16_t)(Y_SUB + 2), sw, (int16_t)(H_SUB - 4), 12 } };
-  const Seg sb[] = { { M_SUB, lnSub, (int16_t)(X_CL + 11), (int16_t)(X_CL + sw - 11),
-                       AL_LEFT, dark, F_BODY } };
-  drawRow(Y_SUB, H_SUB, COL_BG, sbBox, sw ? 3 : 2, sb, 1, force);
+  if (lnSub[0]) {
+    useFont(F_BODY);
+    int16_t sw = (int16_t)(tft.textWidth(lnSub) + 22);
+    if (sw > X_CR - X_CL) sw = X_CR - X_CL;
+    const Box sbBox[] = { card, tab,
+      { light, X_CL, (int16_t)(cy + 2), sw, (int16_t)(H_SUB - 4), 12 } };
+    const Seg sb[] = { { M_SUB, lnSub, (int16_t)(X_CL + 11), (int16_t)(X_CL + sw - 11),
+                         AL_LEFT, dark, F_BODY } };
+    drawRow(cy, H_SUB, COL_BG, sbBox, 3, sb, 1, force);
+    cy += H_SUB;
+  }
 
-  const Seg m0[] = { { M_MEMO0, lnMemo[0], X_CL, X_CR, AL_LEFT, COL_DIM, F_BODY } };
-  const Seg m1[] = { { M_MEMO1, lnMemo[1], X_CL, X_CR, AL_LEFT, COL_DIM, F_BODY } };
-  drawRow(Y_MEMO,            H_MEMO, COL_BG, cd, 2, m0, 1, force);
-  drawRow(Y_MEMO + H_MEMO,   H_MEMO, COL_BG, cd, 2, m1, 1, force);
+  for (uint8_t i = 0; i < 2; i++) {
+    if (!lnMemo[i][0]) continue;
+    const Seg mo[] = { { (uint8_t)(M_MEMO0 + i), lnMemo[i], X_CL, X_CR, AL_LEFT, COL_DIM, F_BODY } };
+    drawRow(cy, H_MEMO, COL_BG, cd, 2, mo, 1, force);
+    cy += H_MEMO;
+  }
 
-  // 준비물 이름 — 연한 민트 띠 위에 ● 챙긴 것 / ○ 아직인 것
-  const Box prBox[] = { card, tab,
-    { COL_PREP_BG, (int16_t)(X_CL - 6), (int16_t)(Y_PREP + 3),
-      (int16_t)(X_CR - X_CL + 12), (int16_t)(H_PREP - 6), R_PILL } };
-  const Seg pr[] = { { M_PREP, has ? it.prep : "", X_CL, X_CR, AL_LEFT, COL_PREP_TX, F_BODY } };
-  drawRow(Y_PREP, H_PREP, COL_BG, prBox, (has && it.prepTotal > 0) ? 3 : 2, pr, 1, force);
+  // 준비물 이름 — 연민트 띠 위에 ● 챙긴 것 / ○ 아직인 것
+  if (lnPrep[0]) {
+    const Box prBox[] = { card, tab,
+      { COL_PREP_BG, (int16_t)(X_CL - 6), (int16_t)(cy + 3),
+        (int16_t)(X_CR - X_CL + 12), (int16_t)(H_PREP - 6), R_PILL } };
+    const Seg pr[] = { { M_PREP, lnPrep, X_CL, X_CR, AL_LEFT, COL_PREP_TX, F_BODY } };
+    drawRow(cy, H_PREP, COL_BG, prBox, 3, pr, 1, force);
+    cy += H_PREP;
+  }
 
   // ── 이어지는 일정 ──
   const bool none = !(cursor + 1 < itemCount);
@@ -892,7 +933,9 @@ static void handleTouch() {
 // ══════════════════════════════════════════════════════════════════
 static void initColors() {
   // 크레용으로 칠한 유치원 알림판 — 크림빛 도화지에 흰 카드를 얹은 모양이다.
-  COL_BG      = PanelTFT::color565(255, 247, 234);   // 도화지
+  // 도화지는 흰 카드와 갈라 보일 만큼 내려 잡는다. 처음에 (255,247,234) 로 두었더니
+  // 실기에서 카드 경계가 묻혔다 — 흰색과 두 단계밖에 차이가 안 났다.
+  COL_BG      = PanelTFT::color565(250, 232, 204);   // 도화지(살굿빛 크림)
   COL_BAR     = PanelTFT::color565(255, 225, 232);   // 맨 위 상태 알약(연분홍)
   COL_CARD    = PanelTFT::color565(255, 255, 255);   // 카드
   COL_TXT     = PanelTFT::color565( 74,  60,  52);   // 진한 코코아 — 검정보다 부드럽다

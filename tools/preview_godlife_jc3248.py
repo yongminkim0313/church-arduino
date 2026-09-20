@@ -10,6 +10,7 @@
 
 출력:
     preview/godlife_jc3248_main.png      본화면
+    preview/godlife_jc3248_main_short.png 줄이 적은 일정(빈 줄을 접은 모습)
     preview/godlife_jc3248_list.png      목록 화면
     preview/godlife_jc3248_marquee.gif   마퀴가 흐르는 본화면
 
@@ -32,13 +33,11 @@ Y_TOP,   H_TOP   = 0,   36     # 상태 알약
 Y_HERO,  H_HERO  = 40,  108    # 시각 카드 (큰 시각 + 날짜 줄)
 Y_BIG,   H_BIG   = 40,  76
 Y_META,  H_META  = 116, 32
-Y_CARD,  H_CARD  = 152, 176    # 일정 카드 (제목2 · 딱지 · 메모2 · 준비물)
-Y_TITLE, H_TITLE = 152, 32
-Y_SUB,   H_SUB   = 216, 28
-Y_MEMO,  H_MEMO  = 244, 26
-Y_PREP,  H_PREP  = 296, 32
-Y_NEXT,  H_NEXT  = 332, 26     # '이어지는 일정' 소제목
-Y_FOOT,  H_FOOT  = 358, 30     # 이어지는 일정 네 줄
+Y_CARD           = 152         # 일정 카드가 시작하는 곳
+H_TITLE, H_SUB   = 32, 28      # 카드 안 줄 높이
+H_MEMO,  H_PREP  = 26, 32
+H_NEXT           = 26          # '이어지는 일정' 소제목
+H_FOOT_MIN, H_FOOT_MAX = 30, 46
 SCHEDULE_LIMIT   = 4
 
 X_PAD, X_CW = 8, 304           # 카드 자리 (8..312)
@@ -55,7 +54,7 @@ H_LIST_CARD                  = H_LIST_T + H_LIST_M + H_LIST_X   # 84
 H_LIST_BLOCK                 = H_LIST_CARD + 4                  # 88 × 5 = 440
 
 # ── 크레용 상자 ───────────────────────────────────────────────────
-COL_BG    = (255, 247, 234)
+COL_BG    = (250, 232, 204)
 COL_BAR   = (255, 225, 232)
 COL_CARD  = (255, 255, 255)
 COL_TXT   = ( 74,  60,  52)
@@ -84,6 +83,14 @@ NEXT = {
     "sub": "유치원 · 준비물 2/3",
     "memo": "도시락과 돗자리 챙기기, 후문에서 하차하고 정문으로 모일 것",
     "prep": "● 돗자리  ● 물통  ○ 도시락",
+}
+NEXT_SHORT = {          # 줄이 적은 일정 — 빈 줄을 접어 카드가 짧아진다
+    "title": "7세반 송암미술관 견학",
+    "label": "유치원", "big": "09.22", "dday": "모레",
+    "when": "9월 22일 (화)", "remain": "1일 11시간 뒤",
+    "sub": "유치원 · 종일 · 준비물 0/2",
+    "memo": "",
+    "prep": "○ 체육복  ○ 운동화",
 }
 FOLLOWING = [
     ("D-5",  "10/10(금) 종일  원장 면담 및 2학기 교육과정 점검"),
@@ -251,6 +258,20 @@ def draw_row(img, y, h, page, boxes, segs, t_ms):
             font.draw(img, text, x0, y_mid, color, clip)
 
 
+def layout(lines):
+    """스케치의 layout() 과 같다 — 빈 줄을 접은 카드 높이와 아래쪽 자리."""
+    t0, t1, sub, m0, m1, prep = lines
+    h = H_TITLE
+    if t1:   h += H_TITLE
+    if sub:  h += H_SUB
+    if m0:   h += H_MEMO
+    if m1:   h += H_MEMO
+    if prep: h += H_PREP
+    y_next = Y_CARD + h + 4
+    y_foot = y_next + H_NEXT
+    return h, y_next, y_foot, max(H_FOOT_MIN, min(H_FOOT_MAX, (H - 2 - y_foot) // SCHEDULE_LIMIT))
+
+
 def status_row(img, f, left, t_ms):
     draw_row(img, Y_TOP, H_TOP, COL_BG, [(COL_BAR, X_PAD, 4, X_CW, 28, 14)], [
         (f["body"], left, X_TL, 170, COL_TXT, "L"),
@@ -259,7 +280,8 @@ def status_row(img, f, left, t_ms):
 
 
 # ══════════════════════════════════════════════════════════════════
-def render_main(f, t_ms, cursor=0):
+def render_main(f, t_ms, cursor=0, item=None):
+    item = item or NEXT
     body, title, n34, n64 = f["body"], f["title"], f["n34"], f["n64"]
     img = Image.new("RGB", (W, H), COL_BG)
     light, dark = CRAYON[cursor % len(CRAYON)]
@@ -270,41 +292,53 @@ def render_main(f, t_ms, cursor=0):
     hero = (COL_CARD, X_PAD, Y_HERO, X_CW, H_HERO, 18)
     draw_row(img, Y_BIG, H_BIG, COL_BG,
              [hero, (dark, X_DD, Y_BIG + (H_BIG - 48) // 2, W_DD, 48, 24)], [
-                 (n64, NEXT["big"], X_BIG, X_DD - 4, COL_ACC, "L"),
-                 (n34, NEXT["dday"], X_DD, X_DD + W_DD, COL_WHITE, "C"),
+                 (n64, item["big"], X_BIG, X_DD - 4, COL_ACC, "L"),
+                 (n34, item["dday"], X_DD, X_DD + W_DD, COL_WHITE, "C"),
              ], t_ms)
 
-    rm_w = body.width(NEXT["remain"]) + 22
+    rm_w = body.width(item["remain"]) + 22
     draw_row(img, Y_META, H_META, COL_BG,
              [hero, (light, X_TR - rm_w, Y_META + 3, rm_w, H_META - 6, 13)], [
-                 (body, NEXT["when"], X_TL, X_TR - rm_w - 8, COL_TXT, "L"),
-                 (body, NEXT["remain"], X_TR - rm_w, X_TR, dark, "C"),
+                 (body, item["when"], X_TL, X_TR - rm_w - 8, COL_TXT, "L"),
+                 (body, item["remain"], X_TR - rm_w, X_TR, dark, "C"),
              ], t_ms)
 
-    # ── 일정 카드: 제목 두 줄 · 딱지 · 메모 두 줄 · 준비물 ──
-    card = (COL_CARD, X_PAD, Y_CARD, X_CW, H_CARD, 18)
-    tab  = (dark, X_PAD, Y_CARD + 8, 12, H_CARD - 16, 6)     # 왼쪽 크레용 띠
-    t0, t1 = fold_two(title, NEXT["title"], X_CR - X_CL)
-    m0, m1 = fold_two(body, NEXT["memo"], X_CR - X_CL)
-    sub_w = body.width(NEXT["sub"]) + 22
+    # ── 일정 카드: 빈 줄은 건너뛴다 — 그만큼 카드가 짧아진다 ──
+    t0, t1 = fold_two(title, item["title"], X_CR - X_CL)
+    m0, m1 = fold_two(body, item["memo"], X_CR - X_CL)
+    h_card, y_next, y_foot, h_foot = layout((t0, t1, item["sub"], m0, m1, item["prep"]))
 
-    draw_row(img, Y_TITLE,           H_TITLE, COL_BG, [card, tab],
+    card = (COL_CARD, X_PAD, Y_CARD, X_CW, h_card, 18)
+    tab  = (dark, X_PAD, Y_CARD + 8, 12, h_card - 16, 6)     # 왼쪽 크레용 띠
+    cy = Y_CARD
+
+    draw_row(img, cy, H_TITLE, COL_BG, [card, tab],
              [(title, t0, X_CL, X_CR, COL_TXT, "L")], t_ms)
-    draw_row(img, Y_TITLE + H_TITLE, H_TITLE, COL_BG, [card, tab],
-             [(title, t1, X_CL, X_CR, COL_TXT, "L")], t_ms)
-    draw_row(img, Y_SUB, H_SUB, COL_BG,
-             [card, tab, (light, X_CL, Y_SUB + 2, sub_w, H_SUB - 4, 12)],
-             [(body, NEXT["sub"], X_CL + 11, X_CL + sub_w - 11, dark, "L")], t_ms)
-    draw_row(img, Y_MEMO,           H_MEMO, COL_BG, [card, tab],
-             [(body, m0, X_CL, X_CR, COL_DIM, "L")], t_ms)
-    draw_row(img, Y_MEMO + H_MEMO,  H_MEMO, COL_BG, [card, tab],
-             [(body, m1, X_CL, X_CR, COL_DIM, "L")], t_ms)
-    draw_row(img, Y_PREP, H_PREP, COL_BG,
-             [card, tab, (COL_PREP_BG, X_CL - 6, Y_PREP + 3, X_CR - X_CL + 12, H_PREP - 6, 13)],
-             [(body, NEXT["prep"], X_CL, X_CR, COL_PREP_TX, "L")], t_ms)
+    cy += H_TITLE
+    if t1:
+        draw_row(img, cy, H_TITLE, COL_BG, [card, tab],
+                 [(title, t1, X_CL, X_CR, COL_TXT, "L")], t_ms)
+        cy += H_TITLE
+    if item["sub"]:
+        sub_w = min(body.width(item["sub"]) + 22, X_CR - X_CL)
+        draw_row(img, cy, H_SUB, COL_BG,
+                 [card, tab, (light, X_CL, cy + 2, sub_w, H_SUB - 4, 12)],
+                 [(body, item["sub"], X_CL + 11, X_CL + sub_w - 11, dark, "L")], t_ms)
+        cy += H_SUB
+    for mo in (m0, m1):
+        if not mo:
+            continue
+        draw_row(img, cy, H_MEMO, COL_BG, [card, tab],
+                 [(body, mo, X_CL, X_CR, COL_DIM, "L")], t_ms)
+        cy += H_MEMO
+    if item["prep"]:
+        draw_row(img, cy, H_PREP, COL_BG,
+                 [card, tab, (COL_PREP_BG, X_CL - 6, cy + 3, X_CR - X_CL + 12, H_PREP - 6, 13)],
+                 [(body, item["prep"], X_CL, X_CR, COL_PREP_TX, "L")], t_ms)
+        cy += H_PREP
 
     # ── 이어지는 일정 ──
-    draw_row(img, Y_NEXT, H_NEXT, COL_BG, [(dark, 14, Y_NEXT + H_NEXT // 2 - 4, 8, 8, 4)], [
+    draw_row(img, y_next, H_NEXT, COL_BG, [(dark, 14, y_next + H_NEXT // 2 - 4, 8, 8, 4)], [
         # 둘 다 고정이라 흐르면 안 된다 — 칸이 글보다 넓어야 한다
         # ("이어지는 일정 없음" 164px < 168 · "눌러서 넘김 ▶" 126px < 130)
         (body, "이어지는 일정", 28, 168, COL_DIM, "L"),
@@ -313,11 +347,11 @@ def render_main(f, t_ms, cursor=0):
 
     for i in range(SCHEDULE_LIMIT):
         dd, rest = FOLLOWING[i] if i < len(FOLLOWING) else ("", "")
-        y = Y_FOOT + i * H_FOOT
+        y = y_foot + i * h_foot
         lt, dk = CRAYON[(cursor + 1 + i) % len(CRAYON)]
-        boxes = [] if not dd else [(lt, X_PAD, y + 2, X_CW, H_FOOT - 4, 13),
-                                   (dk, X_FDD, y + 5, W_FDD, H_FOOT - 10, 10)]
-        draw_row(img, y, H_FOOT, COL_BG, boxes, [
+        boxes = [] if not dd else [(lt, X_PAD, y + 2, X_CW, h_foot - 4, 13),
+                                   (dk, X_FDD, y + 5, W_FDD, h_foot - 10, 10)]
+        draw_row(img, y, h_foot, COL_BG, boxes, [
             (body, dd, X_FDD, X_FDD + W_FDD, COL_WHITE, "C"),
             (body, rest, X_FTX, 306, COL_TXT, "L"),
         ], t_ms)
@@ -367,8 +401,9 @@ def main():
     os.makedirs(out, exist_ok=True)
 
     render_main(f, 0).save(os.path.join(out, "godlife_jc3248_main.png"))
+    render_main(f, 0, 1, NEXT_SHORT).save(os.path.join(out, "godlife_jc3248_main_short.png"))
     render_list(f, 0).save(os.path.join(out, "godlife_jc3248_list.png"))
-    print("▶ preview/godlife_jc3248_main.png · godlife_jc3248_list.png")
+    print("▶ preview/godlife_jc3248_main.png · _main_short.png · _list.png")
 
     # 색을 64 가지로 줄여 굽는다 — 글자 테두리(안티에일리어싱) 말고는 색이 몇 안 되고,
     # 줄이지 않으면 320×480 × 50장이 800KB 를 넘어 저장소에 무겁다.
