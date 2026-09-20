@@ -33,7 +33,20 @@
 //      그 밖 아무 곳    : 다음 일정 → 그다음 → … → 목록 화면 → 처음으로
 //      꺼진 화면        : 첫 눌림은 켜기로만 쓴다(그 한 번은 삼킨다)
 // 5) 글자를 한 단계 키웠다 — 본문 20px · 제목 24px, 큰 시각 64px · D-day 34px.
-// 6) CPU 를 80MHz 로 내리지 않는다. 원본의 전력 손잡이 중 이것만 뺐다 —
+//    **크기는 이 네 가지가 전부다.** VLW 는 구운 크기로만 그려져 크기마다 플래시를
+//    한 벌씩 먹는다(한글 두 벌이 벌써 2.2MB). 그래서 꾸밈은 글자 크기가 아니라
+//    색과 둥근 네모로만 한다 — 아래 6) 이 그 이야기다.
+// 6) **유치원 일정표답게 꾸몄다(크레용 상자).** 어두운 밤색 판이던 것을 크림빛
+//    바탕에 흰 카드를 얹은 모양으로 바꿨다.
+//      - 일정마다 제 색을 준다(크레용 다섯 자루를 돌려 쓴다). 카드 왼쪽 띠 ·
+//        D-day 알약 · 이어지는 일정 딱지가 그 색으로 물든다 — 색만 보고도 아까
+//        보던 일정인지 안다
+//      - 큰 시각 옆 D-day 는 알약에 담아 "오늘 · 내일 · 모레 · D-5" 로 적는다
+//        (그래서 34px 숫자 폰트에 한글 여섯 자를 같이 구웠다 — tools/make-fonts.sh)
+//      - 준비물 줄은 연한 민트 띠 위에 얹어 눈에 먼저 들어오게 했다
+//      - 이어지는 일정은 줄마다 둥근 딱지 — 색이 번갈아 나와 줄이 섞이지 않는다
+//    둥근 네모는 Box 하나로 적고 줄마다 잘라 칠한다(ScheduleTypes.h · drawRow).
+// 7) CPU 를 80MHz 로 내리지 않는다. 원본의 전력 손잡이 중 이것만 뺐다 —
 //    옥탈 PSRAM 과 QSPI 로 300KB 를 33ms 마다 미는 보드라 클럭을 내리면
 //    화면이 밀리는 속도부터 영향을 받는다. 나머지 손잡이(모뎀 슬립 · 백라이트
 //    듀티 · 무동작 화면 끄기 · 마퀴 바퀴 수)는 그대로 두었다.
@@ -81,33 +94,50 @@ static const uint32_t BL_IDLE_MS = 300000UL;  // 이만큼 아무도 안 누르�
 static const int16_t SCR_W = 320;
 static const int16_t SCR_H = 480;
 
-// ── 줄 띠 배치 (겹치지 않게 — 겹치면 옆 줄을 지운다) ───────────────
-// 세로 480 을 이렇게 나눴다. 아래 값을 고칠 때는 합이 480 을 넘지 않는지 볼 것.
-static const int16_t PAD     = 10;            // 좌우 여백
-static const int16_t X_L     = PAD;           // 글이 시작하는 x
-static const int16_t X_R     = SCR_W - PAD;   // 글이 끝나는 x (310)
+// ── 가로 자리 ─────────────────────────────────────────────────────
+// 카드는 좌우 8px 을 띄운 한 장(8..312)이고, 글은 그 안에서 또 들여 쓴다.
+// 왼쪽에 크레용 띠(12px)가 있는 카드는 글이 더 들어와야 해서 두 벌을 둔다.
+static const int16_t X_PAD  = 8,   X_CW = 304;   // 카드 자리 (8..312)
+static const int16_t X_TL   = 22,  X_TR = 298;   // 띠 없는 카드 안 글 범위
+static const int16_t X_CL   = 30,  X_CR = 296;   // 띠 있는 카드 안 글 범위
+static const int16_t X_BIG  = 16;                // 큰 시각만 더 왼쪽에서 — "09:30" 이 175px 라 빠듯하다
+static const int16_t X_DD   = 198, W_DD  = 104;  // D-day 알약 (198..302, "D-30" 79px 이 들어간다)
+static const int16_t X_FDD  = 12,  W_FDD = 64;   // 이어지는 일정 줄의 D-day 칩 ("D-100" 58px)
+static const int16_t X_FTX  = 84,  X_FTR = 306;  // 그 줄의 나머지 글 (222px)
 
-static const int16_t Y_TOP    = 0;    static const int16_t H_TOP   = 32;   // 상태 띠
-static const int16_t Y_BIG    = 32;   static const int16_t H_BIG   = 82;   // 큰 시각 · D-day
-static const int16_t Y_META   = 114;  static const int16_t H_META  = 32;   // 날짜 / 남은 시간
-static const int16_t Y_TITLE  = 146;  static const int16_t H_TITLE = 32;   // 제목 두 줄
-static const int16_t Y_SUB    = 210;  static const int16_t H_SUB   = 28;   // 기관 · 준비물 개수
-static const int16_t Y_MEMO   = 238;  static const int16_t H_MEMO  = 28;   // 메모 두 줄
-static const int16_t Y_PREP   = 294;  static const int16_t H_PREP  = 28;   // 준비물 이름
-static const int16_t Y_NEXT   = 322;  static const int16_t H_NEXT  = 26;   // '이어지는 일정' 소제목
-static const int16_t Y_FOOT   = 348;  static const int16_t H_FOOT  = 32;   // 이어지는 일정 네 줄
-// 카드(짙은 바탕)로 묶는 구간 — 제목부터 준비물까지가 '이 일정' 이다.
-static const int16_t Y_CARD   = Y_TITLE;
-static const int16_t H_CARD   = Y_NEXT - Y_TITLE;
+// ── 세로 자리 (겹치지 않게 — 겹치면 옆 줄을 지운다) ────────────────
+// 세로 480 을 이렇게 나눴다. 카드 한 장은 **여러 줄이 이어 붙은 것**이라,
+// 카드 구간을 줄들이 빈틈없이 덮어야 한다(덮지 못한 띠는 바탕색으로 남는다).
+static const int16_t Y_TOP   = 0;    static const int16_t H_TOP   = 36;   // 상태 알약
+static const int16_t Y_HERO  = 40;   static const int16_t H_HERO  = 108;  // 시각 카드 (40..148)
+static const int16_t Y_BIG   = 40;   static const int16_t H_BIG   = 76;   //   큰 시각 · D-day
+static const int16_t Y_META  = 116;  static const int16_t H_META  = 32;   //   날짜 · 남은 시간
+static const int16_t Y_CARD  = 152;  static const int16_t H_CARD  = 176;  // 일정 카드 (152..328)
+static const int16_t Y_TITLE = 152;  static const int16_t H_TITLE = 32;   //   제목 두 줄
+static const int16_t Y_SUB   = 216;  static const int16_t H_SUB   = 28;   //   기관 · 준비물 개수 딱지
+static const int16_t Y_MEMO  = 244;  static const int16_t H_MEMO  = 26;   //   메모 두 줄
+static const int16_t Y_PREP  = 296;  static const int16_t H_PREP  = 32;   //   준비물 이름 띠
+static const int16_t Y_NEXT  = 332;  static const int16_t H_NEXT  = 26;   // '이어지는 일정' 소제목
+static const int16_t Y_FOOT  = 358;  static const int16_t H_FOOT  = 30;   // 이어지는 일정 네 줄 (358..478)
 
-// 목록 화면 — 상태 띠 아래로 일정마다 세 줄짜리 덩이.
-static const int16_t Y_LIST      = H_TOP;
-static const int16_t H_LIST_T    = 32;   // 제목
-static const int16_t H_LIST_M    = 28;   // 때
-static const int16_t H_LIST_X    = 28;   // 메모
-static const int16_t H_LIST_BLOCK = H_LIST_T + H_LIST_M + H_LIST_X;   // 88 × 5 = 440
+// 목록 화면 — 상태 알약 아래로 일정마다 세 줄짜리 카드 한 장.
+static const int16_t Y_LIST       = H_TOP;
+static const int16_t H_LIST_T     = 32;   // 제목
+static const int16_t H_LIST_M     = 26;   // 때
+static const int16_t H_LIST_X     = 26;   // 메모
+static const int16_t H_LIST_CARD  = H_LIST_T + H_LIST_M + H_LIST_X;   // 84 — 카드 한 장
+static const int16_t H_LIST_BLOCK = H_LIST_CARD + 4;                  // 88 × 5 = 440 (36..476)
 
-static uint16_t COL_BG, COL_BAR, COL_CARD, COL_CARD2, COL_DIM, COL_TXT, COL_ACC, COL_OK, COL_ERR;
+// 둥근 정도 — 카드는 넉넉히, 딱지와 알약은 반원이 되게.
+static const int16_t R_CARD = 18, R_TAB = 6, R_PILL = 13, R_DD = 24;
+
+// ── 크레용 상자 ───────────────────────────────────────────────────
+// 일정마다 한 자루씩 돌려 쓴다. 연한 쪽은 바탕(딱지·알약), 진한 쪽은 글과 띠다.
+static const uint8_t CRAYONS = 5;
+static uint16_t CRAYON_LT[CRAYONS], CRAYON_DK[CRAYONS];
+
+static uint16_t COL_BG, COL_BAR, COL_CARD, COL_DIM, COL_TXT, COL_ACC, COL_OK, COL_ERR,
+                COL_WHITE, COL_PREP_BG, COL_PREP_TX;
 
 // ── 폰트 ──────────────────────────────────────────────────────────
 // VLW 는 구워 넣은 크기로만 그려진다(setTextSize 가 없다) — 크기마다 한 벌씩 든다.
@@ -237,7 +267,13 @@ static const char* wrapLine(const char* src, int16_t maxW, char* out, size_t cap
 }
 
 // 줄 하나를 그린다. 글이 바뀌었거나 흐르는 중일 때만 실제로 그린다(force 면 무조건).
-static void drawRow(int16_t y, int16_t h, uint16_t bg, const Seg* segs, uint8_t n, bool force) {
+//
+// 바탕은 세 겹이다 — 판 색(page)을 깔고, 그 위에 둥근 네모들(boxes)을 얹고, 글을 쓴다.
+// 둥근 네모는 줄보다 큰 것을 그대로 적어도 된다. 자를 칸을 이 줄로 걸어 두므로
+// **카드의 이 줄 몫만** 칠해진다 — 여러 줄에 같은 Box 를 넘기면 이어진 한 장이 된다.
+static void drawRow(int16_t y, int16_t h, uint16_t page,
+                    const Box* boxes, uint8_t nb,
+                    const Seg* segs, uint8_t n, bool force) {
   const uint32_t now = millis();
   bool needDraw = force;
 
@@ -284,7 +320,11 @@ static void drawRow(int16_t y, int16_t h, uint16_t bg, const Seg* segs, uint8_t 
   }
   if (!needDraw) return;
 
-  tft.fillRect(0, y, SCR_W, h, bg);
+  tft.fillRect(0, y, SCR_W, h, page);
+  tft.setClip(0, y, SCR_W, h);                 // 카드가 이 줄 밖으로 새지 않게
+  for (uint8_t i = 0; i < nb; i++)
+    tft.fillRoundRect(boxes[i].x, boxes[i].y, boxes[i].w, boxes[i].h, boxes[i].r, boxes[i].col);
+  tft.clearClip();
   tft.setTextDatum(ML_DATUM);
   for (uint8_t i = 0; i < n; i++) {
     const Marquee& m = marq[segs[i].slot];
@@ -301,6 +341,8 @@ static void drawRow(int16_t y, int16_t h, uint16_t bg, const Seg* segs, uint8_t 
       tft.drawString(m.text, segs[i].x0 - (int16_t)m.off + m.period, y + h / 2);
     } else if (segs[i].align == AL_RIGHT) {
       tft.drawString(m.text, segs[i].x1 - tft.textWidth(m.text), y + h / 2);
+    } else if (segs[i].align == AL_CENTER) {
+      tft.drawString(m.text, segs[i].x0 + (aw - tft.textWidth(m.text)) / 2, y + h / 2);
     } else {
       tft.drawString(m.text, segs[i].x0, y + h / 2);
     }
@@ -401,7 +443,7 @@ static void foldTwo(const char* src, int16_t maxW, uint8_t font,
 }
 
 static void buildLines() {
-  const int16_t w = X_R - X_L;
+  const int16_t w = X_CR - X_CL;   // 카드 안에서 접는다
   lnSub[0] = '\0';
   for (uint8_t i = 0; i < 2; i++) { lnTitle[i][0] = '\0'; lnMemo[i][0] = '\0'; }
   for (uint8_t i = 0; i < SCHEDULE_LIMIT; i++) { lnFootDd[i][0] = '\0'; lnFoot[i][0] = '\0'; }
@@ -455,121 +497,143 @@ static void drawStatusRow(bool force) {
     col = COL_OK;
   }
 
+  const Box pill[] = { { COL_BAR, X_PAD, 4, X_CW, 28, 14 } };
   const Seg segs[] = {
-    { M_TOP_L, left,  X_L, 150, AL_LEFT,  COL_TXT, F_BODY },
-    { M_TOP_R, right, 154, X_R, AL_RIGHT, col,     F_BODY },
+    { M_TOP_L, left,  X_TL, 170,  AL_LEFT,  COL_TXT, F_BODY },
+    { M_TOP_R, right, 174,  X_TR, AL_RIGHT, col,     F_BODY },
   };
-  drawRow(Y_TOP, H_TOP, COL_BAR, segs, 2, force);
-}
-
-// 큰 시각 칸. 왼쪽에 시각(또는 날짜), 오른쪽에 D-day 를 숫자 폰트로 쓴다.
-// 여기만 마퀴를 쓰지 않는다 — 다섯 글자가 넘을 일이 없다.
-static void drawBig(const Item* it, bool force) {
-  static char lastKey[32] = "\x01";
-  char big[16] = "", dd[12] = "";
-
-  if (it) {
-    fmtBig(*it, big, sizeof(big));
-    if (it->dDay == 0) snprintf(dd, sizeof(dd), "D-DAY");
-    else               snprintf(dd, sizeof(dd), "D-%d", it->dDay);
-  }
-
-  char key[32];
-  snprintf(key, sizeof(key), "%s|%s", big, dd);
-  if (!force && strcmp(key, lastKey) == 0) return;
-  snprintf(lastKey, sizeof(lastKey), "%s", key);
-
-  tft.fillRect(0, Y_BIG, SCR_W, H_BIG, COL_BG);
-  if (!it) return;
-
-  tft.setTextDatum(ML_DATUM);
-  useFont(F_NUM64);
-  tft.setTextColor(COL_ACC);
-  tft.setClip(X_L, Y_BIG, 180, H_BIG);        // "09:30" 이 175px — 180 이면 꼭 맞는다
-  tft.drawString(big, X_L, Y_BIG + H_BIG / 2);
-  tft.clearClip();
-
-  useFont(F_NUM34);
-  tft.setTextColor(it->dDay == 0 ? COL_ERR : COL_DIM);
-  tft.setTextDatum(MR_DATUM);
-  tft.setClip(194, Y_BIG, X_R - 194, H_BIG);  // "D-DAY" 가 110px — 116 이면 들어간다
-  tft.drawString(dd, X_R, Y_BIG + H_BIG / 2);
-  tft.clearClip();
-  tft.setTextDatum(ML_DATUM);
+  drawRow(Y_TOP, H_TOP, COL_BG, pill, 1, segs, 2, force);
 }
 
 static void renderMain(bool force) {
   drawStatusRow(force);
 
-  const bool has = (haveData && cursor < itemCount);
-  const Item& it = items[has ? cursor : 0];
+  const bool   has = (haveData && cursor < itemCount);
+  const Item&  it  = items[has ? cursor : 0];
+  // 이 일정의 크레용. 카드 띠 · D-day 알약 · 딱지가 모두 이 색으로 물든다.
+  const uint8_t  cr    = cursor % CRAYONS;
+  const uint16_t light = CRAYON_LT[cr], dark = CRAYON_DK[cr];
 
-  drawBig(has ? &it : nullptr, force);
-
-  char when[64] = "", remain[48] = "";
+  char big[16] = "", dd[16] = "", when[64] = "", remain[48] = "";
   if (has) {
+    fmtBig(it, big, sizeof(big));
+    fmtDday(it, dd, sizeof(dd));                // "오늘 · 내일 · 모레 · D-5"
     fmtWhen(it, when, sizeof(when));
-    fmtCountdown(it, remain, sizeof(remain));   // D-day 는 큰 숫자 칸에 있으니 여기선 남은 시간만
+    fmtCountdown(it, remain, sizeof(remain));   // D-day 는 알약에 있으니 여기선 남은 시간만
   }
 
-  const Seg meta[] = {
-    { M_META_L, when,   X_L, 176, AL_LEFT,  COL_TXT, F_BODY },
-    { M_META_R, remain, 180, X_R, AL_RIGHT, COL_ACC, F_BODY },
-  };
-  drawRow(Y_META, H_META, COL_BG, meta, 2, force);
+  // ── 시각 카드 ── 큰 시각 + D-day 알약 / 날짜 + 남은 시간 알약
+  const Box hero = { COL_CARD, X_PAD, Y_HERO, X_CW, H_HERO, R_CARD };
 
-  // ── 카드: 제목 두 줄 · 기관/준비물 · 메모 두 줄 · 준비물 이름 ──
-  const Seg t0[] = { { M_TITLE0, lnTitle[0], X_L, X_R, AL_LEFT, COL_TXT, F_TITLE } };
-  const Seg t1[] = { { M_TITLE1, lnTitle[1], X_L, X_R, AL_LEFT, COL_TXT, F_TITLE } };
-  const Seg sb[] = { { M_SUB,    lnSub,      X_L, X_R, AL_LEFT, COL_ACC, F_BODY  } };
-  const Seg m0[] = { { M_MEMO0,  lnMemo[0],  X_L, X_R, AL_LEFT, COL_DIM, F_BODY  } };
-  const Seg m1[] = { { M_MEMO1,  lnMemo[1],  X_L, X_R, AL_LEFT, COL_DIM, F_BODY  } };
-  const Seg pr[] = { { M_PREP,   has ? it.prep : "", X_L, X_R, AL_LEFT, COL_OK, F_BODY } };
-  drawRow(Y_TITLE,             H_TITLE, COL_CARD, t0, 1, force);
-  drawRow(Y_TITLE + H_TITLE,   H_TITLE, COL_CARD, t1, 1, force);
-  drawRow(Y_SUB,               H_SUB,   COL_CARD, sb, 1, force);
-  drawRow(Y_MEMO,              H_MEMO,  COL_CARD, m0, 1, force);
-  drawRow(Y_MEMO + H_MEMO,     H_MEMO,  COL_CARD, m1, 1, force);
-  drawRow(Y_PREP,              H_PREP,  COL_CARD, pr, 1, force);
+  const Box bigBox[] = { hero,
+    { (uint16_t)(it.dDay == 0 ? COL_ERR : dark),   // 오늘이면 빨강 — 색만 봐도 안다
+      X_DD, (int16_t)(Y_BIG + (H_BIG - 48) / 2), W_DD, 48, R_DD } };
+  const Seg bigSeg[] = {
+    { M_BIG, big, X_BIG, (int16_t)(X_DD - 4),    AL_LEFT,   COL_ACC,   F_NUM64 },
+    { M_DD,  dd,  X_DD,  (int16_t)(X_DD + W_DD), AL_CENTER, COL_WHITE, F_NUM34 },
+  };
+  drawRow(Y_BIG, H_BIG, COL_BG, bigBox, has ? 2 : 1, bigSeg, 2, force);
+
+  // 남은 시간 알약은 글에 맞춰 재단한다 — 1분마다 글이 바뀌니 그때 같이 잰다
+  useFont(F_BODY);
+  const int16_t rw = remain[0] ? (int16_t)(tft.textWidth(remain) + 22) : 0;
+  const int16_t rx = X_TR - rw;
+  const int16_t wx = (int16_t)(rx - 8 > X_TL + 40 ? rx - 8 : X_TL + 40);
+  const Box metaBox[] = { hero,
+    { light, rx, (int16_t)(Y_META + 3), rw, (int16_t)(H_META - 6), R_PILL } };
+  const Seg metaSeg[] = {
+    { M_META_L, when,   X_TL, wx,   AL_LEFT,   COL_TXT, F_BODY },
+    { M_META_R, remain, rx,   X_TR, AL_CENTER, dark,    F_BODY },
+  };
+  drawRow(Y_META, H_META, COL_BG, metaBox, rw ? 2 : 1, metaSeg, 2, force);
+
+  // ── 일정 카드 ── 제목 두 줄 · 딱지 · 메모 두 줄 · 준비물
+  // 카드와 왼쪽 크레용 띠는 여섯 줄 모두에 같이 넘긴다 — 줄마다 제 몫만 칠해져
+  // 이어 붙으면 한 장이 된다.
+  const Box card  = { COL_CARD, X_PAD, Y_CARD, X_CW, H_CARD, R_CARD };
+  const Box tab   = { dark, X_PAD, (int16_t)(Y_CARD + 8), 12, (int16_t)(H_CARD - 16), R_TAB };
+  const Box cd[]  = { card, tab };
+
+  const Seg t0[] = { { M_TITLE0, lnTitle[0], X_CL, X_CR, AL_LEFT, COL_TXT, F_TITLE } };
+  const Seg t1[] = { { M_TITLE1, lnTitle[1], X_CL, X_CR, AL_LEFT, COL_TXT, F_TITLE } };
+  drawRow(Y_TITLE,           H_TITLE, COL_BG, cd, 2, t0, 1, force);
+  drawRow(Y_TITLE + H_TITLE, H_TITLE, COL_BG, cd, 2, t1, 1, force);
+
+  // 기관 · 준비물 개수 — 글 길이에 맞춘 작은 딱지.
+  // 폭은 **본문 폰트로** 재야 한다 — 바로 위 제목 줄이 24px 를 끼워 두고 갔다.
+  useFont(F_BODY);
+  int16_t sw = lnSub[0] ? (int16_t)(tft.textWidth(lnSub) + 22) : 0;
+  if (sw > X_CR - X_CL) sw = X_CR - X_CL;
+  const Box sbBox[] = { card, tab,
+    { light, X_CL, (int16_t)(Y_SUB + 2), sw, (int16_t)(H_SUB - 4), 12 } };
+  const Seg sb[] = { { M_SUB, lnSub, (int16_t)(X_CL + 11), (int16_t)(X_CL + sw - 11),
+                       AL_LEFT, dark, F_BODY } };
+  drawRow(Y_SUB, H_SUB, COL_BG, sbBox, sw ? 3 : 2, sb, 1, force);
+
+  const Seg m0[] = { { M_MEMO0, lnMemo[0], X_CL, X_CR, AL_LEFT, COL_DIM, F_BODY } };
+  const Seg m1[] = { { M_MEMO1, lnMemo[1], X_CL, X_CR, AL_LEFT, COL_DIM, F_BODY } };
+  drawRow(Y_MEMO,            H_MEMO, COL_BG, cd, 2, m0, 1, force);
+  drawRow(Y_MEMO + H_MEMO,   H_MEMO, COL_BG, cd, 2, m1, 1, force);
+
+  // 준비물 이름 — 연한 민트 띠 위에 ● 챙긴 것 / ○ 아직인 것
+  const Box prBox[] = { card, tab,
+    { COL_PREP_BG, (int16_t)(X_CL - 6), (int16_t)(Y_PREP + 3),
+      (int16_t)(X_CR - X_CL + 12), (int16_t)(H_PREP - 6), R_PILL } };
+  const Seg pr[] = { { M_PREP, has ? it.prep : "", X_CL, X_CR, AL_LEFT, COL_PREP_TX, F_BODY } };
+  drawRow(Y_PREP, H_PREP, COL_BG, prBox, (has && it.prepTotal > 0) ? 3 : 2, pr, 1, force);
 
   // ── 이어지는 일정 ──
   const bool none = !(cursor + 1 < itemCount);
+  const Box dot[] = { { dark, 14, (int16_t)(Y_NEXT + H_NEXT / 2 - 4), 8, 8, 4 } };
   const Seg nx[] = {
-    // 둘 다 고정이라 흐르면 안 된다 — 칸이 글보다 넓어야 한다
-    // ("이어지는 일정 없음" 164px < 166 · "눌러서 넘김 ▶" 126px < 130)
-    { M_NEXT_H,    none ? "이어지는 일정 없음" : "이어지는 일정", X_L, 176, AL_LEFT, COL_DIM, F_BODY },
-    { M_NEXT_HINT, "눌러서 넘김 ▶", 180, X_R, AL_RIGHT, COL_DIM, F_BODY },
+    // 둘 다 고정이라 흐르면 안 된다 — 칸이 글보다 넓어야 한다.
+    // ("이어지는 일정" 120px < 140 · "눌러서 넘김 ▶" 126px < 130)
+    // 이어지는 일정이 없을 때만 안내를 접고 왼쪽에 자리를 다 준다("…없음" 164px).
+    { M_NEXT_H,    none ? "이어지는 일정 없음" : "이어지는 일정",
+      28, (int16_t)(none ? 302 : 168), AL_LEFT, COL_DIM, F_BODY },
+    { M_NEXT_HINT, none ? "" : "눌러서 넘김 ▶", 172, 302, AL_RIGHT, COL_DIM, F_BODY },
   };
-  drawRow(Y_NEXT, H_NEXT, COL_BAR, nx, 2, force);
+  drawRow(Y_NEXT, H_NEXT, COL_BG, dot, 1, nx, 2, force);
 
   for (uint8_t i = 0; i < SCHEDULE_LIMIT; i++) {
-    const Seg row[] = {
-      // D-day 칸은 가장 긴 "D-100"(58px)에 맞춘 60px — 나머지는 전부 일정에 준다
-      { (uint8_t)(M_FOOT_0 + i * 2),     lnFootDd[i], X_L, 70,  AL_LEFT, COL_ACC, F_BODY },
-      { (uint8_t)(M_FOOT_0 + i * 2 + 1), lnFoot[i],   74,  X_R, AL_LEFT, COL_TXT, F_BODY },
+    const int16_t y  = Y_FOOT + i * H_FOOT;
+    const uint8_t c2 = (uint8_t)((cursor + 1 + i) % CRAYONS);
+    const Box fb[] = {
+      { CRAYON_LT[c2], X_PAD, (int16_t)(y + 2), X_CW,  (int16_t)(H_FOOT - 4),  R_PILL },
+      { CRAYON_DK[c2], X_FDD, (int16_t)(y + 5), W_FDD, (int16_t)(H_FOOT - 10), 10 },
     };
-    drawRow(Y_FOOT + i * H_FOOT, H_FOOT, i % 2 ? COL_BG : COL_CARD2, row, 2, force);
+    const Seg row[] = {
+      { (uint8_t)(M_FOOT_0 + i * 2),     lnFootDd[i], X_FDD, (int16_t)(X_FDD + W_FDD),
+        AL_CENTER, COL_WHITE, F_BODY },
+      { (uint8_t)(M_FOOT_0 + i * 2 + 1), lnFoot[i],   X_FTX, X_FTR, AL_LEFT, COL_TXT, F_BODY },
+    };
+    drawRow(y, H_FOOT, COL_BG, fb, lnFootDd[i][0] ? 2 : 0, row, 2, force);
   }
 }
 
-// 목록 화면 — 받아온 일정을 덩이마다 세 줄씩. 긴 줄은 여기서도 흐른다.
+// 목록 화면 — 받아온 일정을 카드 한 장에 세 줄씩. 긴 줄은 여기서도 흐른다.
 static void renderList(bool force) {
   drawStatusRow(force);
 
   for (uint8_t i = 0; i < MAX_ITEMS; i++) {
-    const bool     has = (i < itemCount);
-    const int16_t  y   = Y_LIST + i * H_LIST_BLOCK;
-    // 고른 일정은 밝은 띠로 — 목록에서는 덩이가 다섯이라 바탕 차이가 작으면 묻힌다
-    const uint16_t bg  = (i == cursor) ? COL_BAR : (i % 2 ? COL_BG : COL_CARD2);
-    const uint8_t  s   = M_LIST_0 + i * 3;
+    const bool    has = (i < itemCount);
+    const int16_t y   = Y_LIST + i * H_LIST_BLOCK;
+    const uint8_t cr  = i % CRAYONS;
+    const uint8_t s   = M_LIST_0 + i * 3;
+    // 고른 일정은 카드째 그 크레용 색으로 물든다 — 다섯 장이 나란해도 금방 찾는다
+    const Box bx[] = {
+      { (uint16_t)(i == cursor ? CRAYON_LT[cr] : COL_CARD), X_PAD, y, X_CW, H_LIST_CARD, 16 },
+      { CRAYON_DK[cr], X_PAD, (int16_t)(y + 8), 12, (int16_t)(H_LIST_CARD - 16), R_TAB },
+    };
+    const uint8_t nb = has ? 2 : 0;
 
-    const Seg ti[] = { { s,               has ? items[i].title : "", X_L, X_R, AL_LEFT,
-                         i == cursor ? COL_ACC : COL_TXT, F_TITLE } };
-    const Seg wh[] = { { (uint8_t)(s + 1), lnListWhen[i],            X_L, X_R, AL_LEFT, COL_TXT, F_BODY } };
-    const Seg mo[] = { { (uint8_t)(s + 2), has ? items[i].memo : "", X_L, X_R, AL_LEFT, COL_DIM, F_BODY } };
-    drawRow(y,                         H_LIST_T, bg, ti, 1, force);
-    drawRow(y + H_LIST_T,              H_LIST_M, bg, wh, 1, force);
-    drawRow(y + H_LIST_T + H_LIST_M,   H_LIST_X, bg, mo, 1, force);
+    const Seg ti[] = { { s,                has ? items[i].title : "", X_CL, X_CR, AL_LEFT,
+                         i == cursor ? CRAYON_DK[cr] : COL_TXT, F_TITLE } };
+    const Seg wh[] = { { (uint8_t)(s + 1), lnListWhen[i],            X_CL, X_CR, AL_LEFT, COL_TXT, F_BODY } };
+    const Seg mo[] = { { (uint8_t)(s + 2), has ? items[i].memo : "", X_CL, X_CR, AL_LEFT, COL_DIM, F_BODY } };
+    drawRow(y,                        H_LIST_T, COL_BG, bx, nb, ti, 1, force);
+    drawRow(y + H_LIST_T,             H_LIST_M, COL_BG, bx, nb, wh, 1, force);
+    drawRow(y + H_LIST_T + H_LIST_M,  H_LIST_X, COL_BG, bx, nb, mo, 1, force);
   }
 }
 
@@ -827,15 +891,29 @@ static void handleTouch() {
 
 // ══════════════════════════════════════════════════════════════════
 static void initColors() {
-  COL_BG    = PanelTFT::color565(10, 16, 32);
-  COL_BAR   = PanelTFT::color565(22, 34, 62);
-  COL_CARD  = PanelTFT::color565(17, 26, 50);
-  COL_CARD2 = PanelTFT::color565(14, 22, 43);   // 이어지는 일정 줄의 번갈아 바탕
-  COL_DIM   = PanelTFT::color565(130, 150, 185);
-  COL_TXT   = PanelTFT::color565(235, 240, 250);
-  COL_ACC   = PanelTFT::color565(255, 178, 70);
-  COL_OK    = PanelTFT::color565(80, 220, 130);
-  COL_ERR   = PanelTFT::color565(255, 95, 95);
+  // 크레용으로 칠한 유치원 알림판 — 크림빛 도화지에 흰 카드를 얹은 모양이다.
+  COL_BG      = PanelTFT::color565(255, 247, 234);   // 도화지
+  COL_BAR     = PanelTFT::color565(255, 225, 232);   // 맨 위 상태 알약(연분홍)
+  COL_CARD    = PanelTFT::color565(255, 255, 255);   // 카드
+  COL_TXT     = PanelTFT::color565( 74,  60,  52);   // 진한 코코아 — 검정보다 부드럽다
+  COL_DIM     = PanelTFT::color565(150, 136, 126);   // 메모처럼 한 걸음 뒤에 둘 글
+  COL_ACC     = PanelTFT::color565(255, 122,  72);   // 큰 시각(살구)
+  COL_OK      = PanelTFT::color565( 30, 162, 122);   // 갱신 잘 됨
+  COL_ERR     = PanelTFT::color565(232,  76,  96);   // 탈 났을 때 · 오늘인 일정
+  COL_WHITE   = PanelTFT::color565(255, 255, 255);   // 알약·칩 위의 글
+  COL_PREP_BG = PanelTFT::color565(211, 243, 228);   // 준비물 띠(연민트)
+  COL_PREP_TX = PanelTFT::color565( 26, 140, 104);
+
+  // 크레용 다섯 자루 — 분홍 · 하늘 · 민트 · 레몬 · 라일락.
+  // 일정마다 한 자루씩 돌아가며 물들인다(연한 쪽은 바탕, 진한 쪽은 띠와 글).
+  static const uint8_t LT[CRAYONS][3] = {
+    {255, 228, 236}, {219, 238, 255}, {211, 243, 228}, {255, 240, 200}, {234, 227, 255} };
+  static const uint8_t DK[CRAYONS][3] = {
+    {226,  92, 136}, { 58, 136, 220}, { 30, 162, 122}, {214, 144,  28}, {126, 104, 210} };
+  for (uint8_t i = 0; i < CRAYONS; i++) {
+    CRAYON_LT[i] = PanelTFT::color565(LT[i][0], LT[i][1], LT[i][2]);
+    CRAYON_DK[i] = PanelTFT::color565(DK[i][0], DK[i][1], DK[i][2]);
+  }
 }
 
 void setup() {

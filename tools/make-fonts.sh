@@ -66,13 +66,15 @@ python3 tools/ttf2vlw.py "$TTF" --size 30 --no-ascii --chars "0123456789:.-DAY "
 # 글자를 한 단계씩 키웠다. 본문 20px · 제목 24px, 큰 시각 64px · D-day 34px.
 # 한글 두 벌이 2.2MB 라 앱 칸 4MB(partitions.csv)에 들어가는 한계에 가깝다.
 # 숫자 폰트는 달란트 리더의 것과 글자 집합이 다르다 — 시각(:)과 D-DAY 가 필요하다.
+# 34px 에는 "오늘 내일 모레" 여섯 자를 같이 굽는다. D-day 알약이 "D-2" 대신 이 말을
+# 쓰기 때문이다(한 자 8KB 남짓 — 플래시에 거의 표가 나지 않는다).
 echo "▶ GodlifeScheduleNext_JC3248/FontKR20.h · FontKR24.h 생성 중..."
 python3 tools/ttf2vlw.py "$TTF" --size 20 --ks2350 --chars "·▶●○◆…—" \
     --var FontKR20 -o GodlifeScheduleNext_JC3248/FontKR20.h
 python3 tools/ttf2vlw.py "$TTF" --size 24 --ks2350 --chars "·▶●○◆…—" \
     --var FontKR24 -o GodlifeScheduleNext_JC3248/FontKR24.h
 echo "▶ GodlifeScheduleNext_JC3248/FontNum34.h · FontNum64.h 생성 중..."
-python3 tools/ttf2vlw.py "$TTF" --size 34 --no-ascii --chars "0123456789:.-DAY " \
+python3 tools/ttf2vlw.py "$TTF" --size 34 --no-ascii --chars "0123456789:.-DAY 오늘내일모레" \
     --var FontNum34 -o GodlifeScheduleNext_JC3248/FontNum34.h
 python3 tools/ttf2vlw.py "$TTF" --size 64 --no-ascii --chars "0123456789:.-DAY " \
     --var FontNum64 -o GodlifeScheduleNext_JC3248/FontNum64.h

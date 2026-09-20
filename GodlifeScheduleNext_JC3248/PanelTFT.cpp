@@ -110,10 +110,25 @@ void PanelTFT::drawRect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t col
   markDirty();
 }
 
+// 둥근 네모는 Arduino_GFX 에 맡기지 않고 가로줄로 직접 칠한다.
+// 그쪽 fillRoundRect 는 우리 자를 칸(setClip)을 모르기 때문이다 — 화면의 카드는
+// 여러 줄에 걸쳐 있고, 줄 하나를 다시 그릴 때 그 줄 몫만 칠해져야 한다(drawRow).
+// 칠하는 일은 전부 fillRect 로 넘기므로 자를 칸은 거기서 지켜진다.
 void PanelTFT::fillRoundRect(int32_t x, int32_t y, int32_t w, int32_t h, int32_t r, uint16_t color) {
-  if (!_ready) return;
-  s_canvas->fillRoundRect(x, y, w, h, r, color);
-  markDirty();
+  if (!_ready || w <= 0 || h <= 0) return;
+  if (r > w / 2) r = w / 2;
+  if (r > h / 2) r = h / 2;
+  if (r <= 0) { fillRect(x, y, w, h, color); return; }
+
+  fillRect(x, y + r, w, h - 2 * r, color);            // 가운데 몸통은 한 번에
+
+  // 위아래 모서리 — 줄마다 원의 방정식으로 들일 만큼을 구해 그만큼 좁혀 칠한다
+  for (int32_t i = 0; i < r; i++) {
+    const int32_t dy = r - i;
+    const int32_t dx = r - (int32_t)(sqrtf((float)(r * r - dy * dy)) + 0.5f);
+    fillRect(x + dx, y + i,         w - 2 * dx, 1, color);
+    fillRect(x + dx, y + h - 1 - i, w - 2 * dx, 1, color);
+  }
 }
 
 // 이미 올려 둔 칸이 있으면 그것을, 없으면 빈 칸(없으면 가장 오래된 칸)에 새로 올린다.

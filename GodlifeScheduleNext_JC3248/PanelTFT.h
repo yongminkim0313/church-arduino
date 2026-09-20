@@ -4,7 +4,8 @@
 // **자를 칸(clip)** 을 더했다. 마퀴가 칸을 넘치는 글자를 옆 칸에 흘리지 않으려면
 // 자르는 자리가 있어야 하는데, 원본 GodlifeScheduleNext 는 그것을 TFT_eSprite 의
 // 뷰포트로 했다. 이 보드에는 스프라이트가 없다(통짜 버퍼에 바로 그린다).
-// → setClip() 으로 칸을 걸고, 그 밖의 점은 drawString·fillRect 가 건너뛴다.
+// → setClip() 으로 칸을 걸고, 그 밖의 점은 drawString·fillRect·fillRoundRect 가 건너뛴다.
+// 둥근 카드를 줄 단위로 나눠 그리는 것도 이 자를 칸이 하는 일이다(.ino 의 drawRow).
 //
 // 이 보드의 3.5" 320×480 패널은 AXS15231B 를 QSPI 로 물린다. TFT_eSPI 는 QSPI 를
 // 다루지 못해서(라이브러리의 한계다) 그림은 Arduino_GFX 로 그린다.
@@ -70,6 +71,7 @@ class PanelTFT {
   void fillRect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t color);
   void drawRect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t color);
   void fillRoundRect(int32_t x, int32_t y, int32_t w, int32_t h, int32_t r, uint16_t color);
+  // r 이 w/2·h/2 만큼 크면 알약(캡슐)이 된다 — D-day 칩과 딱지가 그렇게 그려진다.
 
   static uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
     return (uint16_t)((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
