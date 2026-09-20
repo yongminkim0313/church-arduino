@@ -139,6 +139,22 @@ VLW 는 TFT_eSPI 의 스무스폰트 형식이다. Arduino_GFX 에는 이것을 
 **3. C to C 케이블로는 맥에 안 잡힌다.** 보드의 Type-C 에 CC 저항이 없어 **A to C 케이블**
 이라야 한다(설명서에도 있다).
 
+**4. 미는 일과 패널 명령이 같은 QSPI 버스를 다툰다.** 이 스케치에서 터진 것은 아니고,
+같은 껍데기를 쓰는 형제 스케치 `GodlifeScheduleNext_JC3248` 을 실기에 구웠을 때
+켜자마자 부팅 루프로 드러났다(그쪽은 첫 화면을 바로 보이려고 `setup()` 에서 `flushNow()` 를 부른다).
+
+```
+E spi_master: Cannot send polling transaction while the previous ... not terminated
+assert failed: spi_device_polling_end spi_master.c:1476 (host->cur_cs == handle->id)
+```
+
+미는 일은 코어 0 의 태스크가, 패널 명령은 본체(코어 1)가 부른다 — 겹치면 ESP-IDF 가
+그 자리에서 죽는다. 여기서는 `flushNow()` 를 쓰지 않아 아직 안 터졌을 뿐, 화면을 재우는
+`writecommand(0x10)` 이 같은 자리에 있어 **딥슬립을 켠 기기에서 언제든** 같은 일이 난다.
+→ `PanelTFT.cpp` 에 버스 자물쇠(뮤텍스)를 두고 `flush()` 와 `writecommand()` 를 묶었다.
+그리는 일(버퍼에 쓰기)은 메모리뿐이라 자물쇠 밖이다.
+(RGB 패널을 쓰는 `TalentNfcReader_CST820` 판은 미는 태스크가 없어 이 자물쇠가 필요 없다.)
+
 ### 아직 확인하지 못한 것
 
 1. **PN532** — 아직 붙여 보지 않았다. 시리얼에 펌웨어 판 번호가 찍히는지 볼 것.

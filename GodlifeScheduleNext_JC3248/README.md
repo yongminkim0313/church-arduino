@@ -219,9 +219,10 @@ assert failed: spi_device_polling_end spi_master.c:1476 (host->cur_cs == handle-
 건드렸다. 그리는 일(버퍼에 쓰기)은 메모리뿐이라 괜찮지만 **미는 일과 패널 명령**은 아니다.
 → `PanelTFT.cpp` 에 버스 자물쇠(뮤텍스)를 두고 `flush()` 와 `writecommand()` 를 묶었다.
 
-> 형제 스케치 `TalentNfcReader_JC3245`·`_CST820` 의 `PanelTFT` 에는 이 자물쇠가 없다.
-> 거기서는 `flushNow()` 를 쓰지 않아 아직 드러나지 않았지만, 화면을 끄고 켜는
-> `writecommand()` 는 같은 자리에 있다 — 딥슬립을 켠 기기에서 터질 수 있다.
+> 같은 껍데기를 쓰는 `TalentNfcReader_JC3245` 에도 같은 자물쇠를 옮겨 넣었다.
+> 거기서는 `flushNow()` 를 쓰지 않아 아직 드러나지 않았을 뿐, 화면을 재우는
+> `writecommand()` 가 같은 자리에 있어 딥슬립을 켠 기기에서 터질 자리였다.
+> `TalentNfcReader_CST820`(RGB 패널) 판은 미는 태스크가 없어 자물쇠가 필요 없다.
 
 ## 아직 확인하지 못한 것
 

@@ -8,18 +8,35 @@ static Arduino_DataBus* s_bus    = nullptr;
 static Arduino_GFX*     s_panel  = nullptr;
 static Arduino_Canvas*  s_canvas = nullptr;
 
+// ── QSPI 버스 자물쇠 ──────────────────────────────────────────────
+// 버퍼로 미는 일(flush)과 패널 명령(displayOff/On)은 **같은 QSPI 버스**를 쓰는데,
+// 미는 쪽은 코어 0 의 태스크고 나머지는 본체(코어 1)다. 둘이 겹치면 ESP-IDF 가
+// 그 자리에서 죽는다 — 형제 스케치 GodlifeScheduleNext_JC3248 을 실기에 구웠을 때
+// 켜자마자 부팅 루프로 드러났다(그쪽은 setup 에서 flushNow 를 부른다):
+//   E spi_master: Cannot send polling transaction while the previous ... not terminated
+//   assert failed: spi_device_polling_end spi_master.c:1476 (host->cur_cs == handle->id)
+// 이 스케치에서는 아직 터지지 않았다 — flushNow() 를 쓰지 않아서다. 그러나 화면을
+// 재우는 writecommand() 는 같은 자리에 있어, 딥슬립을 켠 기기에서 언제든 같은 일이 난다.
+// 버스를 만지는 자리를 모두 이 자물쇠로 묶는다. 그리는 일(버퍼에 쓰기)은 메모리뿐이라 상관없다.
+static SemaphoreHandle_t s_busLock = nullptr;
+
+static inline void busLock()   { if (s_busLock) xSemaphoreTake(s_busLock, portMAX_DELAY); }
+static inline void busUnlock() { if (s_busLock) xSemaphoreGive(s_busLock); }
+
 uint16_t* PanelTFT::fb() const { return s_canvas ? s_canvas->getFramebuffer() : nullptr; }
 
 // ── 미는 태스크 ───────────────────────────────────────────────────
-// 그리는 쪽은 버퍼(PSRAM)에만 쓰고, 미는 것은 이 태스크뿐이다. 그래서 QSPI 버스를
-// 두 곳에서 잡는 일이 없다. 그리는 도중에 밀리면 그 프레임만 반쯤 그려진 채 나가는데,
+// 그리는 쪽은 버퍼(PSRAM)에만 쓰고, 미는 것은 이 태스크뿐이다 — 버스를 함께 쓰는
+// 나머지 자리(패널 명령)는 위의 자물쇠로 묶었다. 그리는 도중에 밀리면 그 프레임만 반쯤 그려진 채 나가는데,
 // 33ms 뒤 다음 프레임에서 바로 메워진다 — 눈에 띄지 않는다.
 void PanelTFT::flushTask(void* arg) {
   PanelTFT* self = (PanelTFT*)arg;
   for (;;) {
     if (self->_dirty) {
       self->_dirty = false;
+      busLock();
       s_canvas->flush();
+      busUnlock();
     }
     vTaskDelay(pdMS_TO_TICKS(33));
   }
@@ -48,6 +65,8 @@ void PanelTFT::init() {
   pinMode(JC_TOUCH_INT, INPUT_PULLUP);   // 폴링으로 읽지만, 딥슬립 기상에 쓰려면 입력이라야 한다
 
   // 코어 0 — 본체(loop)는 코어 1 에서 돈다. 미는 동안 본체가 멈추지 않는다.
+  // 자물쇠는 태스크를 띄우기 전에 만든다 — 먼저 띄우면 첫 flush 가 자물쇠 없이 돈다.
+  s_busLock = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(flushTask, "gfxflush", 4096, this, 1, nullptr, 0);
 }
 
@@ -221,14 +240,18 @@ void PanelTFT::drawString(const char* s, int32_t x, int32_t y, uint8_t builtinFo
 // 원본은 ILI9341 의 슬립 인(0x10)을 보내 화면을 재운다. 여기서는 패널을 끈다.
 void PanelTFT::writecommand(uint8_t cmd) {
   if (!_ready) return;
+  busLock();                                   // 미는 태스크와 같은 버스다
   if (cmd == 0x10)      s_panel->displayOff();
   else if (cmd == 0x11) s_panel->displayOn();
+  busUnlock();
 }
 
 void PanelTFT::flushNow() {
   if (!_ready) return;
   _dirty = false;
+  busLock();
   s_canvas->flush();
+  busUnlock();
 }
 
 // ── 터치 ──────────────────────────────────────────────────────────
