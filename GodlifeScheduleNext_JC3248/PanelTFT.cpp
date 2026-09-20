@@ -8,6 +8,19 @@ static Arduino_DataBus* s_bus    = nullptr;
 static Arduino_GFX*     s_panel  = nullptr;
 static Arduino_Canvas*  s_canvas = nullptr;
 
+// ── QSPI 버스 자물쇠 ──────────────────────────────────────────────
+// 버퍼로 미는 일(flush)과 패널 명령(displayOff/On)은 **같은 QSPI 버스**를 쓰는데,
+// 미는 쪽은 코어 0 의 태스크고 나머지는 본체(코어 1)다. 둘이 겹치면 ESP-IDF 가
+// 그 자리에서 죽는다 — 실기에서 켜자마자 부팅 루프로 드러났다:
+//   E spi_master: Cannot send polling transaction while the previous ... not terminated
+//   assert failed: spi_device_polling_end spi_master.c:1476 (host->cur_cs == handle->id)
+// setup() 의 flushNow() 가 태스크의 첫 flush 와 부딪힌 것이었다. 버스를 만지는
+// 자리를 모두 이 자물쇠로 묶는다. 그리는 일(버퍼에 쓰기)은 메모리뿐이라 상관없다.
+static SemaphoreHandle_t s_busLock = nullptr;
+
+static inline void busLock()   { if (s_busLock) xSemaphoreTake(s_busLock, portMAX_DELAY); }
+static inline void busUnlock() { if (s_busLock) xSemaphoreGive(s_busLock); }
+
 uint16_t* PanelTFT::fb() const { return s_canvas ? s_canvas->getFramebuffer() : nullptr; }
 
 // ── 미는 태스크 ───────────────────────────────────────────────────
@@ -19,7 +32,9 @@ void PanelTFT::flushTask(void* arg) {
   for (;;) {
     if (self->_dirty) {
       self->_dirty = false;
+      busLock();
       s_canvas->flush();
+      busUnlock();
     }
     vTaskDelay(pdMS_TO_TICKS(33));
   }
@@ -48,6 +63,8 @@ void PanelTFT::init() {
   pinMode(JC_TOUCH_INT, INPUT_PULLUP);   // 폴링으로 읽지만, 딥슬립 기상에 쓰려면 입력이라야 한다
 
   // 코어 0 — 본체(loop)는 코어 1 에서 돈다. 미는 동안 본체가 멈추지 않는다.
+  // 자물쇠는 태스크를 띄우기 전에 만든다 — 먼저 띄우면 첫 flush 가 자물쇠 없이 돈다.
+  s_busLock = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(flushTask, "gfxflush", 4096, this, 1, nullptr, 0);
 }
 
@@ -219,14 +236,18 @@ void PanelTFT::drawString(const char* s, int32_t x, int32_t y) {
 // 보냈다 — 같은 번호를 그대로 받아 이 패널의 명령으로 옮긴다.
 void PanelTFT::writecommand(uint8_t cmd) {
   if (!_ready) return;
+  busLock();                                   // 미는 태스크와 같은 버스다
   if (cmd == 0x28 || cmd == 0x10)      s_panel->displayOff();
   else if (cmd == 0x29 || cmd == 0x11) s_panel->displayOn();
+  busUnlock();
 }
 
 void PanelTFT::flushNow() {
   if (!_ready) return;
   _dirty = false;
+  busLock();
   s_canvas->flush();
+  busUnlock();
 }
 
 // ── 터치 ──────────────────────────────────────────────────────────
