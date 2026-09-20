@@ -21,20 +21,38 @@ static SemaphoreHandle_t s_busLock = nullptr;
 static inline void busLock()   { if (s_busLock) xSemaphoreTake(s_busLock, portMAX_DELAY); }
 static inline void busUnlock() { if (s_busLock) xSemaphoreGive(s_busLock); }
 
+// ── 그리는 중에는 밀지 않는다 ─────────────────────────────────────
+// 한 줄을 고쳐 그리는 동안 버퍼에는 **글자가 없는 순간**이 있다 — 바탕을 지우고,
+// 둥근 네모를 얹고, 그 다음에야 글자를 쓴다. 그 틈에 밀면 그 프레임에서는 그 줄이
+// 빈 채로 나간다. 흐르는 마퀴는 그 줄을 초당 서른 번 고쳐 그리므로, 빈 틈이 자주
+// 걸려 **글자가 깜빡이는 것처럼 보인다** — 실기에서 그렇게 드러났다.
+// (원래는 fillRect 한 번 + 글자여서 틈이 짧았고, 카드를 얹으면서 길어졌다.)
+// → 한 프레임을 다 그릴 때까지 미는 쪽을 붙잡아 둔다(beginPaint/endPaint).
+//    미는 일은 몇 ms 라 그리는 쪽이 기다려도 30fps 를 놓치지 않는다.
+static SemaphoreHandle_t s_paintLock = nullptr;
+
+static inline void paintLock()   { if (s_paintLock) xSemaphoreTake(s_paintLock, portMAX_DELAY); }
+static inline void paintUnlock() { if (s_paintLock) xSemaphoreGive(s_paintLock); }
+
+void PanelTFT::beginPaint() { paintLock(); }
+void PanelTFT::endPaint()   { paintUnlock(); }
+
 uint16_t* PanelTFT::fb() const { return s_canvas ? s_canvas->getFramebuffer() : nullptr; }
 
 // ── 미는 태스크 ───────────────────────────────────────────────────
 // 그리는 쪽은 버퍼(PSRAM)에만 쓰고, 미는 것은 이 태스크뿐이다. 그래서 QSPI 버스를
-// 두 곳에서 잡는 일이 없다. 그리는 도중에 밀리면 그 프레임만 반쯤 그려진 채 나가는데,
-// 33ms 뒤 다음 프레임에서 바로 메워진다 — 눈에 띄지 않는다.
+// 두 곳에서 잡는 일이 없다. 다만 **반쯤 그려진 프레임은 밀지 않는다** — 그리는
+// 쪽이 beginPaint 로 붙잡고 있으면 놓을 때까지 기다린다(바로 위 주석).
 void PanelTFT::flushTask(void* arg) {
   PanelTFT* self = (PanelTFT*)arg;
   for (;;) {
     if (self->_dirty) {
-      self->_dirty = false;
+      paintLock();              // 그리는 중이면 한 프레임이 끝날 때까지
+      self->_dirty = false;     // 자물쇠 안에서 내린다 — 이 사이의 덧칠을 놓치지 않는다
       busLock();
       s_canvas->flush();
       busUnlock();
+      paintUnlock();
     }
     vTaskDelay(pdMS_TO_TICKS(33));
   }
@@ -64,7 +82,8 @@ void PanelTFT::init() {
 
   // 코어 0 — 본체(loop)는 코어 1 에서 돈다. 미는 동안 본체가 멈추지 않는다.
   // 자물쇠는 태스크를 띄우기 전에 만든다 — 먼저 띄우면 첫 flush 가 자물쇠 없이 돈다.
-  s_busLock = xSemaphoreCreateMutex();
+  s_busLock   = xSemaphoreCreateMutex();
+  s_paintLock = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(flushTask, "gfxflush", 4096, this, 1, nullptr, 0);
 }
 
@@ -257,12 +276,16 @@ void PanelTFT::writecommand(uint8_t cmd) {
   busUnlock();
 }
 
+// 지금 바로 민다. 자물쇠를 잡는 차례는 태스크와 같게 둔다(그림 → 버스) —
+// 반대로 잡는 곳이 하나라도 있으면 서로 기다리다 멈춘다.
 void PanelTFT::flushNow() {
   if (!_ready) return;
+  paintLock();
   _dirty = false;
   busLock();
   s_canvas->flush();
   busUnlock();
+  paintUnlock();
 }
 
 // ── 터치 ──────────────────────────────────────────────────────────

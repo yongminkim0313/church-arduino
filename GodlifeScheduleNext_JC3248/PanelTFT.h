@@ -99,6 +99,13 @@ class PanelTFT {
   void drawString(const char* s, int32_t x, int32_t y);
 
   // ── 그 밖 ──
+  // ── 한 프레임 묶기 ──
+  // 이 둘 사이에 그린 것은 **다 그려진 뒤에야** 화면으로 나간다. 줄 하나를 고쳐
+  // 그리는 동안에는 바탕만 있고 글자가 없는 순간이 있는데, 그때 밀리면 그 줄이 빈
+  // 채로 한 프레임 나가 마퀴가 깜빡이는 것처럼 보인다(PanelTFT.cpp 의 주석).
+  void beginPaint();
+  void endPaint();
+
   void writecommand(uint8_t cmd);              // 0x28/0x29(DISPOFF/DISPON) 로 화면을 끄고 켠다
   bool getTouch(uint16_t* x, uint16_t* y);     // 누르고 있는 동안 true
   void flushNow();                             // 지금 바로 민다(부팅 화면처럼 급할 때)

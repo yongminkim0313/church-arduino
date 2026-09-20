@@ -680,6 +680,9 @@ static void renderList(bool force) {
 
 static void render() {
   bool force = dirtyAll;
+  // 다 그릴 때까지 미는 태스크를 붙잡아 둔다. 안 그러면 한 줄이 바탕만 깔린 순간에
+  // 밀려 나가, 흐르는 마퀴가 깜빡이는 것처럼 보인다(PanelTFT.cpp 의 주석).
+  tft.beginPaint();
   if (force) {
     tft.fillScreen(COL_BG);
     resetMarquees();
@@ -688,6 +691,7 @@ static void render() {
   }
   if (screen == SCR_MAIN) renderMain(force);
   else                    renderList(force);
+  tft.endPaint();
 }
 
 // ══════════════════════════════════════════════════════════════════
