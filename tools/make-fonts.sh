@@ -62,4 +62,19 @@ echo "▶ GodlifeScheduleNext/FontNum30.h 생성 중..."
 python3 tools/ttf2vlw.py "$TTF" --size 30 --no-ascii --chars "0123456789:.-DAY " \
     --var FontNum30 -o GodlifeScheduleNext/FontNum30.h
 
+# 하루동행 일정 표시(가이션 JC3248W535 판) — 화면이 240×135 에서 320×480 으로 넓어져
+# 글자를 한 단계씩 키웠다. 본문 20px · 제목 24px, 큰 시각 64px · D-day 34px.
+# 한글 두 벌이 2.2MB 라 앱 칸 4MB(partitions.csv)에 들어가는 한계에 가깝다.
+# 숫자 폰트는 달란트 리더의 것과 글자 집합이 다르다 — 시각(:)과 D-DAY 가 필요하다.
+echo "▶ GodlifeScheduleNext_JC3248/FontKR20.h · FontKR24.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 20 --ks2350 --chars "·▶●○◆…—" \
+    --var FontKR20 -o GodlifeScheduleNext_JC3248/FontKR20.h
+python3 tools/ttf2vlw.py "$TTF" --size 24 --ks2350 --chars "·▶●○◆…—" \
+    --var FontKR24 -o GodlifeScheduleNext_JC3248/FontKR24.h
+echo "▶ GodlifeScheduleNext_JC3248/FontNum34.h · FontNum64.h 생성 중..."
+python3 tools/ttf2vlw.py "$TTF" --size 34 --no-ascii --chars "0123456789:.-DAY " \
+    --var FontNum34 -o GodlifeScheduleNext_JC3248/FontNum34.h
+python3 tools/ttf2vlw.py "$TTF" --size 64 --no-ascii --chars "0123456789:.-DAY " \
+    --var FontNum64 -o GodlifeScheduleNext_JC3248/FontNum64.h
+
 echo "✅ 완료"

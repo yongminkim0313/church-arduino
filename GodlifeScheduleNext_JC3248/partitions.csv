@@ -1,0 +1,18 @@
+# GodlifeScheduleNext_JC3248 전용 파티션표 (16MB 플래시)
+#
+# 이 파일은 build.sh 의 PartitionScheme=custom 때문에 쓰인다. 한글 폰트 두 벌
+# (20px 918KB + 24px 1.26MB = 2.2MB)이 들어가야 해서 코어가 들고 있는 표로는 모자란다.
+#   default           앱 1.31MB   ← 폰트 한 벌도 안 들어간다
+#   huge_app          앱 3MB      ← 지금 3.39MB 라 들어가지 않는다
+#   app3M_fat9M_16MB  앱 3MB      ← 마찬가지
+#
+# 그래서 직접 잡는다. OTA 는 쓰지 않으므로 app 은 하나다.
+# 앱 4MB — 지금 3.39MB 이니 600KB 남짓 남는다. 폰트를 더 키우려면 여기부터 늘릴 것
+#          (플래시가 16MB 라 spiffs 칸을 줄여 앱을 8MB 로 잡을 수도 있다).
+# spiffs  — 이 스케치는 쓰지 않는다. 형제 스케치(TalentNfcReader_JC3245)와 같은 표를
+#           그대로 두어, 같은 보드에 서로 갈아 구울 때 NVS 자리가 어긋나지 않게 한다.
+# 이름,    타입, 서브타입,  오프셋,    크기
+nvs,      data, nvs,     0x9000,  0x5000,
+app0,     app,  factory, 0x10000, 0x400000,
+spiffs,   data, spiffs,  0x410000,0xBE0000,
+coredump, data, coredump,0xFF0000,0x10000,

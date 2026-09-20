@@ -79,6 +79,7 @@ SPI 로 흘려보낸다), ESP32 의 `uint16_t` 배열은 **리틀엔디언**이�
 | `SHT41MonitorC3BLE` | ESP32-C3 | 위와 같되 **BLE** 로 디스플레이에 직접 송신 |
 | `ChurchDisplayRxBLE` | T-Display | **BLE** GATT 서버판 디스플레이 |
 | `GodlifeScheduleNext` | T-Display | 하루동행 다음 일정 표시. 넘치는 글은 마퀴로 흐름 |
+| `GodlifeScheduleNext_JC3248` | JC3248W535 (3.5" 터치) | 위와 같은 일정 표시. 화면이 열 배 넓어 제목·메모·준비물·이어지는 일정까지 펼쳐 놓는다 |
 | `TalentNfcReader` | ESP32-S3 | NFC 키링 펀펀포인트 지급·사용 (PN532 + ILI9341 + XPT2046 터치) |
 
 ## 하드웨어
@@ -148,4 +149,8 @@ python3 tools/img2rgb565_dither.py church_logo.png \
 - **하루동행 일정 표시**: `GodlifeScheduleNext/` — jdServer `/api/godlife/schedule/next` 를 읽어
   다음 일정을 표시, 화면을 넘치는 글은 마퀴로 흘림 (보드에 구워 실제 응답 파싱까지 확인 —
   [README](GodlifeScheduleNext/README.md))
+- **하루동행 일정 표시(큰 화면 판)**: `GodlifeScheduleNext_JC3248/` — 같은 스케치를 가이션
+  JC3248W535(3.5" 320×480 터치)로 옮겨, 제목·메모를 두 줄로 접고 준비물 이름과 이어지는
+  일정 네 건까지 한 화면에 펼친다. 단추 대신 화면을 누른다 (컴파일·호스트 미리보기까지 확인 —
+  [README](GodlifeScheduleNext_JC3248/README.md))
 - **부팅 로고 → 온습도 화면 전환** 흐름 추가.

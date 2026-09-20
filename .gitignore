@@ -15,6 +15,7 @@
 
 # 빌드 산출물
 build/
+__pycache__/
 *.bin
 *.elf
 *.map
