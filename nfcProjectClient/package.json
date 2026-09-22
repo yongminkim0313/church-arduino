@@ -1,0 +1,9 @@
+{
+  "name": "nfc-project-client",
+  "version": "1.0.0",
+  "description": "nfcProject 디스플레이(WebSocket 서버)에 NFC 정보를 보내는 클라이언트",
+  "type": "commonjs",
+  "bin": { "nfc-client": "nfcClient.js" },
+  "scripts": { "start": "node nfcClient.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}

@@ -12,10 +12,21 @@
 //                   화면을 짧게 누르면(또는 시리얼 'n') microSD 에 받아 둔 사진이 순서대로 넘어간다 —
 //                   활성 → 사진1 → 사진2 → … → 사진N → 다시 활성.
 //   2) 원격 전환  : WebSocket 으로 enable(=활성으로) / toggle·next(=다음 사진) 가 오면 바뀐다.
-//   3) NFC 화면   : 클라이언트가 카드 UID·이름·잔여포인트를 보내면, 그 UID 의 사진을
-//                   전체화면으로 덮고 위에 이름(상단)·잔여 포인트(하단)를 얹는다.
+//   3) NFC 화면   : 리더(nfcProjectClient)가 카드 UID 를 보내면, 이 기기가 서버에 이름·잔액을
+//                   물어 그 UID 의 사진을 전체화면으로 덮고 위에 이름(상단)·잔여 포인트(하단)를 얹는다.
 //                   몇 초 뒤(NFC_SHOW_MS) 자동으로 대기 화면으로 돌아간다.
 //                   UID 사진은 microSD 의 /talent/<UID>.565 를 읽는다(없으면 내장 MEMBERS[]).
+//
+// ── 서버 설정 · 출석모드 (관리자 화면 '리더 설정 → v2.0') ───────────
+//   부팅해 와이파이에 붙으면 GET /api/talent/config/v2 로 설정을 받고, 그 뒤 CONFIG_TTL_MS 마다 다시 받는다.
+//     · 밝기(backlight 1~16)     받는 즉시 백라이트에 적용된다
+//     · 출석모드(attendanceMode) 켜면 키링을 댄 그 자리에서 바로 출석 포인트가 지급된다
+//     · 출석 카드(attendanceCard) 얼마를 어떤 사유로 줄지는 서버에 등록된 이 카드가 정한다.
+//                                비어 있으면 지급하지 않고 사진·잔액만 띄운다.
+//   서버와 이야기하는 쪽은 이 기기 하나다 — 리더는 읽은 UID 를 넘기기만 한다.
+//   한 태깅이 두 곳에서 처리되면 같은 출석이 두 번 올라간다.
+//   같은 키링이 ATTEND_COOLDOWN_MS 안에 또 오면 "이미 출석했어요" 만 띄우고 주지 않는다
+//   (기기에 시계가 없어 "하루 한 번" 을 알 수 없다 — 시간 간격으로 막는다).
 //
 // ── 사진 동기화 (화면 길게 누르기) ──────────────────────────────────
 //   화면을 LONG_PRESS_MS 이상 누르면 펀펀포인트 서버(config.h 의 TALENT_SERVER)에서
@@ -38,11 +49,14 @@
 //         JSON  {"state":"enable"} / {"state":"toggle"} / {"state":"next"} / {"state":"prev"}
 //         글자  "enable" / "toggle" / "next" / "prev"   (enable = 활성 화면으로, toggle·next = 다음 사진)
 //         ※ "disable"·{"enabled":false} 는 예전 규약이다 — 비활성 그림을 걷어내 활성 화면으로 간다.
-//     · NFC 태그 알림 (이 UID 사진 + 이름 + 잔여포인트를 띄운다)
-//         JSON  {"uid":"04A1B2C3","name":"홍길동","points":1200}
+//     · NFC 태그 알림 — **UID 하나면 된다**. 이름·잔액은 이 기기가 서버에 물어 채운다.
+//         JSON  {"uid":"04A1B2C3"}
+//         (옛 규약 {"uid":…,"name":…,"points":…} 도 받는다 — 그때는 묻지 않고 그대로 띄운다)
 //   보드 → 붙은 쪽 : 상태가 바뀌거나 새로 붙을 때마다
 //     · JSON  {"mode":"idle","photo":"enable","index":0,"count":12,"online":true}   (photo = enable 또는 사진 UID)
-//     · JSON  {"mode":"nfc","uid":"04A1B2C3","online":true}
+//     · JSON  {"mode":"nfc","uid":"04A1B2C3","name":"홍길동","points":1205,
+//              "known":true,"note":"출석 완료 +5P","online":true}
+//       리더는 이 응답으로 소리를 가른다 — 서버와 말하지 않으므로 결과를 알 길이 이것뿐이다.
 //
 // ── 빌드 (Arduino IDE 도구 메뉴) ────────────────────────────────────
 //   보드: ESP32S3 Dev Module   PSRAM: OPI PSRAM   Flash Size: 16MB
@@ -93,6 +107,11 @@ static const int DOT_R  = 8;     // 점 반지름
 #define DOT_YELLOW 0xFFE0
 #define DOT_RED    0xF800
 
+// 점의 세 상태. **여기서 선언한다** — 아래(drawLinkDot 옆)에 두면 안 된다.
+// 아두이노는 빌드할 때 함수 원형을 스케치 맨 앞(첫 함수 정의 자리)에 끼워 넣는데,
+// LinkState 를 돌려주는 linkState() 의 원형이 이 선언보다 앞에 놓여 "타입을 모른다" 로 깨진다.
+enum LinkState { LINK_FAIL, LINK_WAIT, LINK_OK };
+
 // ── 핀 ──────────────────────────────────────────────────────────────
 #define PIN_I2C_SDA   8
 #define PIN_I2C_SCL  48
@@ -101,6 +120,8 @@ static const int DOT_R  = 8;     // 점 반지름
 
 // ── 밝기 ────────────────────────────────────────────────────────────
 // PWM 이 아니다. 핀을 짧게 흔든 횟수로 16단계 중 하나를 고른다(LILYGO 보드 방식).
+// 이 값은 **서버에 못 붙었을 때 쓰는 기본값**이다 — 붙으면 관리자 화면(리더 설정 → v2.0)의
+// 밝기가 이깁니다. 서버 스키마(yvServer/talent/talentConfigV2.js)의 기본값과 같게 둘 것.
 #define BL_LEVEL 4               // ← 1(가장 어둡다) … 16(가장 밝다)
 
 static void backlightOn(uint8_t level) {
@@ -204,6 +225,30 @@ static int     photoIdx  = 0;    // 대기 화면에서 지금 보이는 사진 
 static uint32_t nfcUntil = 0;    // 이 시각(millis)이 지나면 NFC 화면을 접는다
 static char    nfcUid[32] = "";
 
+static char    nfcName[40] = "";  // 지금 NFC 화면에 띄운 이름·잔액·한 줄 안내 — 붙은 리더에게 그대로 알려 준다
+static long    nfcPoints   = 0;
+static bool    nfcKnown    = false;
+static char    nfcNote[32] = "";
+
+// 리더가 보낸 UID 를 여기 담아 두고 loop 에서 처리한다.
+// WebSocket 콜백 안에서 서버를 부르지 않는 이유: 조회·지급은 수백 ms 가 걸리는 일인데,
+// 그동안 콜백이 돌아오지 않으면 같은 소켓으로 들어온 다음 것이 밀려 라이브러리가 엉킨다.
+static char    pendingUid[32] = "";
+
+// ── 서버 설정 (리더 설정 → v2.0) ────────────────────────────────────
+// 부팅해서 와이파이에 붙으면 받고, 그 뒤 CONFIG_TTL_MS 마다 다시 받는다.
+// 서버에 못 붙으면 아래 기본값으로 돈다 — 값은 서버 스키마(talentConfigV2.js)와 같게 둘 것.
+static uint8_t  cfgBacklight   = BL_LEVEL;
+static bool     cfgAttendMode  = false;
+static char     cfgAttendCard[24] = "";
+static uint32_t cfgNextAt      = 0;      // 다음 설정 조회 시각(millis)
+static bool     cfgGotOnce     = false;  // 한 번이라도 받아 봤나(시리얼 표시용)
+
+// 최근 출석한 키링 — 같은 아이가 잇달아 대도 한 번만 센다(ATTEND_COOLDOWN_MS).
+struct AttendSeen { char uid[24]; uint32_t at; };
+static AttendSeen attendSeen[ATTEND_RECENT_MAX];
+static int        attendSeenCount = 0;
+
 static bool online    = false;   // 화면에 그려 둔 연결 상태(아이콘이 떠 있나)
 static bool wasDown   = false;   // 직전에 손가락이 닿아 있었나(누르는 순간을 가려내려고)
 static bool serversUp = false;   // mDNS·WebSocket 을 켰나(와이파이가 붙은 뒤 한 번만)
@@ -292,7 +337,7 @@ static void drawStatus(const char *msg) {
 }
 
 // ── client 연결 상태 점 ─────────────────────────────────────────────
-enum LinkState { LINK_FAIL, LINK_WAIT, LINK_OK };
+// (enum LinkState 는 맨 위 '점' 설정 옆에 있다 — 함수 원형보다 앞이라야 한다)
 static LinkState shownLink = (LinkState)-1;   // 화면에 그려 둔 점 색(바뀔 때만 다시 그린다)
 
 // 지금 client 연결 상태. 와이파이 없음 → 실패, 붙은 client 있음 → 정상, 그 외 → 대기.
@@ -360,7 +405,9 @@ static void drawIdle() {
 }
 
 // NFC 화면 — UID 사진 전체화면 + 상단 이름 + 하단 잔여 포인트.
-static void drawNfc(const uint16_t *photo, const char *name, long points) {
+// note 가 있으면 하단 라벨('잔여 포인트') 자리에 그 말을 대신 쓴다 —
+// 출석모드에서 "출석 완료 +5P" 처럼, 무슨 일이 일어났는지 숫자보다 먼저 읽히게.
+static void drawNfc(const uint16_t *photo, const char *name, long points, const char *note) {
   if (!frame) {                                        // 버퍼가 없으면 사진만
     gfx->draw16bitRGBBitmap(0, 0, (uint16_t *)photo, 480, 480);
     drawLinkDot();
@@ -375,19 +422,27 @@ static void drawNfc(const uint16_t *photo, const char *name, long points) {
 
   char num[24]; commafy(points, num, sizeof(num));
   char pts[32]; snprintf(pts, sizeof(pts), "%s P", num);
-  drawCenteredUTF8("잔여 포인트", 240, BAND_BOT_Y + 30, 2, COL_WHITE);  // 하단: 라벨
-  drawCenteredUTF8(pts,          240, BAND_BOT_Y + 74, 4, COL_GOLD);   // 하단: 숫자
+  const bool hasNote = note && note[0];
+  drawCenteredUTF8(hasNote ? note : "잔여 포인트", 240, BAND_BOT_Y + 30, 2,
+                   hasNote ? COL_GOLD : COL_WHITE);            // 하단: 라벨(또는 안내)
+  drawCenteredUTF8(pts,                            240, BAND_BOT_Y + 74, 4, COL_GOLD);   // 하단: 숫자
   drawLinkDot();
 
-  Serial.printf("NFC 화면: uid=%s 이름=%s 포인트=%ld\n", nfcUid, name, points);
+  Serial.printf("NFC 화면: uid=%s 이름=%s 포인트=%ld%s%s\n", nfcUid, name, points,
+                hasNote ? " · " : "", hasNote ? note : "");
 }
 
 // 지금 상태를 붙어 있는 모두(또는 한 client)에게 알린다.
+// NFC 화면일 때는 조회 결과까지 함께 보낸다 — 리더(nfcProjectClient)는 서버와 말하지 않으므로
+// 자기가 읽은 카드가 어떻게 됐는지 알 길이 이 응답뿐이다(소리를 그것으로 가른다).
 static void sendState(int8_t only = -1) {
-  char msg[160];
+  char msg[288];
   if (mode == MODE_NFC)
-    snprintf(msg, sizeof(msg), "{\"mode\":\"nfc\",\"uid\":\"%s\",\"online\":%s}",
-             nfcUid, online ? "true" : "false");
+    snprintf(msg, sizeof(msg),
+             "{\"mode\":\"nfc\",\"uid\":\"%s\",\"name\":\"%s\",\"points\":%ld,"
+             "\"known\":%s,\"note\":\"%s\",\"online\":%s}",
+             nfcUid, nfcName, nfcPoints, nfcKnown ? "true" : "false", nfcNote,
+             online ? "true" : "false");
   else
     snprintf(msg, sizeof(msg), "{\"mode\":\"idle\",\"photo\":\"%s\",\"index\":%d,\"count\":%d,\"online\":%s}",
              photoLabel(photoIdx), photoIdx, sdPhotoCount, online ? "true" : "false");
@@ -452,12 +507,22 @@ static void listPhotos() {
 }
 
 // NFC 화면을 띄운다(몇 초 뒤 자동으로 대기 화면으로 돌아간다).
-static void showNfc(const char *uid, const char *name, long points) {
+// 이름이 비어 있으면(서버에 없는 키링이거나 조회를 못 했을 때) UID 를 대신 띄운다 —
+// 빈 띠만 보이면 기기가 멈춘 것인지 카드를 모르는 것인지 구별할 수 없다.
+static void showNfc(const char *uid, const char *name, long points, bool known,
+                    const char *note = "") {
   strncpy(nfcUid, uid, sizeof(nfcUid) - 1); nfcUid[sizeof(nfcUid) - 1] = '\0';
+  strncpy(nfcName, (name && name[0]) ? name : uid, sizeof(nfcName) - 1);
+  nfcName[sizeof(nfcName) - 1] = '\0';
+  strncpy(nfcNote, note ? note : "", sizeof(nfcNote) - 1);
+  nfcNote[sizeof(nfcNote) - 1] = '\0';
+  nfcPoints = points;
+  nfcKnown  = known;
+
   const uint16_t *photo = loadPhotoForUid(uid);
   mode = MODE_NFC;
   nfcUntil = millis() + NFC_SHOW_MS;
-  drawNfc(photo, name, points);
+  drawNfc(photo, nfcName, points, nfcNote);
   sendState();
 }
 
@@ -626,6 +691,172 @@ static void syncPhotos() {
   goIdle();
 }
 
+// ── 서버 설정 받기 (리더 설정 → v2.0) ──────────────────────────────
+// GET /api/talent/config/v2?device=<이 기기> → { config: { backlight, attendanceMode, attendanceCard } }
+// 못 받으면 아무것도 바꾸지 않는다 — 들고 있던 값(또는 펌웨어 기본값)으로 계속 돈다.
+// 와이파이가 흔들릴 때마다 밝기가 튀거나 출석모드가 꺼지면 현장에서 더 혼란스럽다.
+static void fetchConfig() {
+  cfgNextAt = millis() + CONFIG_TTL_MS;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  char url[192];
+  snprintf(url, sizeof(url), "%s/api/talent/config/v2?device=%s", TALENT_SERVER, TALENT_DEVICE_ID);
+
+  HTTPClient http; WiFiClientSecure scli; WiFiClient cli;
+  beginHttp(http, scli, cli, url);
+  http.setTimeout(6000);
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) { http.end(); Serial.printf("[설정] 받기 실패 code=%d\n", code); return; }
+  String body = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) { Serial.println("[설정] 해석 실패"); return; }
+  JsonObject c = doc["config"].as<JsonObject>();
+  if (c.isNull()) { Serial.println("[설정] config 가 없다"); return; }
+
+  const uint8_t bl = (uint8_t)(c["backlight"] | (int)cfgBacklight);
+  cfgAttendMode = c["attendanceMode"] | false;
+  strncpy(cfgAttendCard, c["attendanceCard"] | "", sizeof(cfgAttendCard) - 1);
+  cfgAttendCard[sizeof(cfgAttendCard) - 1] = '\0';
+
+  if (bl >= 1 && bl <= 16 && bl != cfgBacklight) {    // 바뀔 때만 흔든다(같은 값이면 깜빡일 뿐이다)
+    cfgBacklight = bl;
+    backlightOn(cfgBacklight);
+  }
+  cfgGotOnce = true;
+  Serial.printf("[설정] 밝기 %d/16 · 출석모드 %s%s%s\n", cfgBacklight,
+                cfgAttendMode ? "켜짐" : "꺼짐",
+                cfgAttendMode ? " · 카드 " : "",
+                cfgAttendMode ? (cfgAttendCard[0] ? cfgAttendCard : "없음(지급 안 함)") : "");
+}
+
+// ── 이름·잔액 조회 ──────────────────────────────────────────────────
+// GET /api/talent/feed?uid=<UID>&limit=0 → { who: { name, balance, known } }
+// 예전에는 리더(nfcProjectClient)가 이 일을 했다. 서버와 말하는 쪽을 디스플레이 하나로
+// 모으면서 이리로 옮겼다 — 출석 지급도 여기서 하므로 한 태깅이 한 곳에서만 처리된다.
+static bool lookupTalent(const char *uid, char *name, size_t nameCap, long *points, bool *known) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  char url[192];
+  snprintf(url, sizeof(url), "%s/api/talent/feed?uid=%s&limit=0", TALENT_SERVER, uid);
+
+  HTTPClient http; WiFiClientSecure scli; WiFiClient cli;
+  beginHttp(http, scli, cli, url);
+  http.setTimeout(6000);
+  const uint32_t t0 = millis();
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) { http.end(); Serial.printf("[서버] 조회 실패 code=%d\n", code); return false; }
+  String body = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) { Serial.println("[서버] 응답 해석 실패"); return false; }
+  strncpy(name, doc["who"]["name"] | "", nameCap - 1); name[nameCap - 1] = '\0';
+  *points = doc["who"]["balance"] | 0L;
+  *known  = doc["who"]["known"] | false;
+  Serial.printf("[서버] %s → %s · %ld P%s (%lums)\n", uid, name, *points,
+                *known ? "" : " (서버에 없는 키링)", (unsigned long)(millis() - t0));
+  return true;
+}
+
+// ── 출석 지급 ───────────────────────────────────────────────────────
+// POST /api/talent/earn { uid, card, device } → { name, balance, delta, item }
+// 금액은 보내지 않는다 — 얼마를 어떤 사유로 줄지는 서버에 등록된 그 카드가 정한다.
+// 기기는 현장에 놓인 물건이라 요청을 흉내 내기 쉬운데, 값이 서버에만 있으면 그래 봐야
+// 관리자가 정한 범위를 벗어나지 못한다(v1.0 리더와 같은 규칙).
+static bool attendEarn(const char *uid, char *name, size_t nameCap, long *points, long *delta) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  char url[160];
+  snprintf(url, sizeof(url), "%s/api/talent/earn", TALENT_SERVER);
+
+  char payload[192];
+  snprintf(payload, sizeof(payload), "{\"uid\":\"%s\",\"card\":\"%s\",\"device\":\"%s\"}",
+           uid, cfgAttendCard, TALENT_DEVICE_ID);
+
+  HTTPClient http; WiFiClientSecure scli; WiFiClient cli;
+  beginHttp(http, scli, cli, url);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(6000);
+  const int code = http.POST((uint8_t *)payload, strlen(payload));
+  String body = http.getString();
+  http.end();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[출석] 지급 실패 code=%d %s\n", code, body.c_str());
+    return false;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) { Serial.println("[출석] 응답 해석 실패"); return false; }
+  strncpy(name, doc["name"] | "", nameCap - 1); name[nameCap - 1] = '\0';
+  *points = doc["balance"] | 0L;
+  *delta  = doc["delta"] | 0L;
+  Serial.printf("[출석] %s +%ldP → 잔액 %ld P\n", uid, *delta, *points);
+  return true;
+}
+
+// 이 키링이 방금 출석했나 — ATTEND_COOLDOWN_MS 안이면 true(다시 주지 않는다).
+static bool attendedRecently(const char *uid) {
+  const uint32_t nowMs = millis();
+  for (int i = 0; i < attendSeenCount; i++)
+    if (!strcmp(attendSeen[i].uid, uid) && (nowMs - attendSeen[i].at) < ATTEND_COOLDOWN_MS) return true;
+  return false;
+}
+
+// 출석한 키링을 기억한다. 자리가 차면 가장 오래된 것을 밀어낸다.
+static void rememberAttend(const char *uid) {
+  const uint32_t nowMs = millis();
+  for (int i = 0; i < attendSeenCount; i++) {
+    if (!strcmp(attendSeen[i].uid, uid)) { attendSeen[i].at = nowMs; return; }
+  }
+  int slot = attendSeenCount;
+  if (attendSeenCount < ATTEND_RECENT_MAX) {
+    attendSeenCount++;
+  } else {
+    slot = 0;                                   // 가장 오래 전에 온 것을 찾아 덮는다
+    for (int i = 1; i < ATTEND_RECENT_MAX; i++)
+      if ((int32_t)(attendSeen[i].at - attendSeen[slot].at) < 0) slot = i;
+  }
+  strncpy(attendSeen[slot].uid, uid, sizeof(attendSeen[slot].uid) - 1);
+  attendSeen[slot].uid[sizeof(attendSeen[slot].uid) - 1] = '\0';
+  attendSeen[slot].at = nowMs;
+}
+
+// ── 태그 한 건 처리 ─────────────────────────────────────────────────
+// 리더가 넘긴 UID 하나로 (1) 출석모드면 지급하고 (2) 아니면 이름·잔액만 물어
+// (3) 그 결과를 화면에 띄운다. loop 에서 부른다 — 서버 왕복이 있어 콜백 안에서 하지 않는다.
+static void processTag(const char *uid) {
+  char name[40] = "";
+  long points = 0, delta = 0;
+  bool known = false;
+
+  // 출석모드 — 카드를 고르지 않았으면 지급하지 않는다(관리자 화면이 경고로 알린다).
+  if (cfgAttendMode && cfgAttendCard[0]) {
+    if (attendedRecently(uid)) {
+      if (lookupTalent(uid, name, sizeof(name), &points, &known))
+        showNfc(uid, name, points, known, "이미 출석했어요");
+      else
+        showNfc(uid, "", 0, false, "이미 출석했어요");
+      return;
+    }
+    if (attendEarn(uid, name, sizeof(name), &points, &delta)) {
+      rememberAttend(uid);
+      char note[32];
+      snprintf(note, sizeof(note), "출석 완료 +%ldP", delta);
+      showNfc(uid, name, points, true, note);
+      return;
+    }
+    // 지급이 안 됐다 — 조회라도 해서 사진·잔액은 띄운다. 아무 반응이 없으면
+    // 아이는 기기가 고장난 줄 알고 계속 카드를 댄다.
+    Serial.println("[출석] 지급하지 못해 조회만 한다");
+  }
+
+  if (lookupTalent(uid, name, sizeof(name), &points, &known)) {
+    showNfc(uid, name, points, known, known ? "" : "등록되지 않은 키링");
+  } else {
+    showNfc(uid, "", 0, false, "서버에 물어보지 못했어요");
+  }
+}
+
 // ── WebSocket 명령 풀기 ─────────────────────────────────────────────
 // 글자 명령 하나 — enable/disable = 활성 화면, toggle/next = 다음 사진, prev = 이전 사진.
 static void handleWord(const char *s) {
@@ -638,11 +869,17 @@ static void handleWord(const char *s) {
 static void handleCommand(const char *text, size_t len) {
   JsonDocument doc;
   if (deserializeJson(doc, text, len) == DeserializationError::Ok) {
-    if (doc["uid"].is<const char *>()) {               // NFC 태그
-      const char *uid  = doc["uid"]  | "";
-      const char *name = doc["name"] | "";
-      long points      = doc["points"] | 0L;
-      showNfc(uid, name, points);
+    if (doc["uid"].is<const char *>()) {               // NFC 태그 — 리더는 UID 만 보낸다
+      const char *uid = doc["uid"] | "";
+      if (!uid[0]) return;
+      // 이름·잔액이 함께 온 옛 규약(리더가 직접 조회하던 시절)도 그대로 받는다.
+      // 그때는 이미 다 알고 있으니 서버에 다시 묻지 않고 바로 띄운다.
+      if (doc["points"].is<long>() || doc["points"].is<int>()) {
+        showNfc(uid, doc["name"] | "", doc["points"] | 0L, true);
+        return;
+      }
+      strncpy(pendingUid, uid, sizeof(pendingUid) - 1);   // 서버 왕복은 loop 에서
+      pendingUid[sizeof(pendingUid) - 1] = '\0';
       return;
     }
     if (doc["enabled"].is<bool>()) { homePhoto(); return; }   // 비활성은 없앴다 — 어느 쪽이든 활성 화면
@@ -770,8 +1007,8 @@ void setup() {
 
   // 4) 백라이트를 마지막에 켠다 — 먼저 켜면 그리는 동안 빈 화면이 번쩍인다.
   pinMode(PIN_BL, OUTPUT);
-  backlightOn(BL_LEVEL);
-  Serial.printf("밝기 %d/16 단계\n", BL_LEVEL);
+  backlightOn(cfgBacklight);     // 서버에 붙기 전까지는 펌웨어 기본값(BL_LEVEL)
+  Serial.printf("밝기 %d/16 단계 (서버 설정을 받으면 바뀐다)\n", cfgBacklight);
 
   touchBegin();                  // 화면을 켠 뒤에 — 확장칩(bus)이 begin() 에서 준비된다
 
@@ -789,6 +1026,7 @@ void loop() {
     if (online) {
       Serial.printf("[와이파이] 연결됨 %s (%s)\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
       startServers();            // 붙은 뒤에 mDNS·WebSocket 을 켠다
+      fetchConfig();             // 밝기·출석모드를 받아 온다(못 받으면 들고 있던 값으로 돈다)
       if (!bootSyncDone) {       // 부팅 후 처음 붙었을 때 서버에서 사진을 모두 받아 SD 에 저장
         bootSyncDone = true;
         syncPhotos();
@@ -802,6 +1040,17 @@ void loop() {
 
   if (serversUp) webSocket.loop();   // WebSocket 을 굴린다(받은 것을 처리)
 
+  // 리더가 넘긴 태그 — 조회·출석 지급은 수백 ms 가 걸려 WebSocket 콜백 밖(여기)에서 한다.
+  if (pendingUid[0]) {
+    char uid[32];
+    strncpy(uid, pendingUid, sizeof(uid) - 1); uid[sizeof(uid) - 1] = '\0';
+    pendingUid[0] = '\0';            // 처리 중에 다음 태그가 들어와도 덮이지 않게 먼저 비운다
+    processTag(uid);
+  }
+
+  // 설정 다시 받기 — 관리자 화면에서 밝기·출석모드를 바꾸면 이만큼 뒤에 반영된다
+  if (online && (int32_t)(millis() - cfgNextAt) >= 0) fetchConfig();
+
   // client 연결 상태 점 — client 가 붙거나 떨어져 색이 바뀔 때만 다시 그린다(화면 갱신 없이도)
   if (linkState() != shownLink) drawLinkDot();
 
@@ -814,8 +1063,15 @@ void loop() {
       case 'h': case 'H': Serial.println("[명령] 활성 화면"); homePhoto(); break;
       case 's': case 'S': listPhotos(); break;
       case 'l': case 'L': listSD(); break;
+      case 'c': case 'C': Serial.println("[명령] 설정 다시 받기"); fetchConfig(); break;
+      case 'i': case 'I':
+        Serial.printf("[상태] 기기 %s · 밝기 %d/16 · 출석모드 %s · 출석 카드 %s · 설정 %s\n",
+                      TALENT_DEVICE_ID, cfgBacklight, cfgAttendMode ? "켜짐" : "꺼짐",
+                      cfgAttendCard[0] ? cfgAttendCard : "없음",
+                      cfgGotOnce ? "받음" : "못 받음(기본값으로 동작)");
+        break;
       case 'r': case 'R': Serial.println("[명령] 재부팅합니다..."); Serial.flush(); ESP.restart(); break;
-      case '?':           Serial.println("[명령] n 다음 · p 이전 · h 활성 · s 사진 목록 · l SD 목록 · r 재부팅"); break;
+      case '?':           Serial.println("[명령] n 다음 · p 이전 · h 활성 · s 사진 목록 · l SD 목록 · c 설정 받기 · i 상태 · r 재부팅"); break;
       default: break;
     }
   }
