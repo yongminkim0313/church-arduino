@@ -106,6 +106,7 @@ static bool      wsStarted   = false;    // ws.begin 을 불렀나(디스플레�
 static bool      wsConnected = false;
 static IPAddress displayIp;
 static uint32_t  resolveAt   = 0;        // 다음 mDNS 조회 시각
+static uint32_t  downSince   = 0;        // 끊긴 채로 있던 시작 시각(0 = 붙어 있음). IP 가 바뀌었나 다시 확인하려고
 
 // 보낸 태그의 답을 기다리는 중인가 — 디스플레이가 조회·출석 처리를 마치면
 // {"mode":"nfc",...} 를 돌려준다. 그 답으로 소리를 가른다(아래 ackService).
@@ -116,10 +117,11 @@ static void wsEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
       wsConnected = true;
+      downSince   = 0;
       Serial.printf("[디스플레이] 붙음 ws://%s:%d/\n", displayIp.toString().c_str(), DISPLAY_PORT);
       break;
     case WStype_DISCONNECTED:
-      if (wsConnected) Serial.println("[디스플레이] 끊김 — 다시 붙는다");
+      if (wsConnected) { Serial.println("[디스플레이] 끊김 — 다시 붙는다"); downSince = millis(); }
       wsConnected = false;
       break;
     case WStype_TEXT: {
@@ -152,23 +154,72 @@ static void ackService() {
   sndFail();
 }
 
-// 디스플레이를 찾아 WebSocket 을 연다. mDNS → 실패하면 DISPLAY_IP → 그래도 없으면 5초 뒤 다시.
+// 디스플레이를 mDNS 로 찾는다. 세 가지를 차례로 시도한다 —
+//   1) ws 서비스 질의(queryService) : 디스플레이가 광고하는 ws._tcp 를 훑는다.
+//      ESP32 의 queryHost('.local' 호스트네임 직접 해석)는 상대가 켜져 있어도 0.0.0.0 을
+//      돌려주는 일이 잦은데, 서비스 질의는 잘 잡힌다 — 순서와 무관하게 붙게 하는 핵심이다.
+//   2) 호스트 질의(queryHost)         : 예전 방식(서비스 이름이 안 맞는 공유기 대비).
+//   3) 고정 IP(DISPLAY_IP)            : mDNS 가 아예 막힌 망일 때 config.h 에 적어 둔 값.
+// 셋 다 실패하면 0.0.0.0 을 돌려준다.
+static IPAddress resolveDisplay() {
+  const int n = MDNS.queryService("ws", "tcp");     // 광고된 ws 서버들
+  for (int i = 0; i < n; i++)                        // 이름이 nfc-display 인 것을 먼저 고른다
+    if (MDNS.hostname(i) == DISPLAY_HOST) return MDNS.address(i);
+  if (n > 0) return MDNS.address(0);                 // 망에 ws 서버가 하나뿐이면(디스플레이) 그걸로
+
+  IPAddress ip = MDNS.queryHost(DISPLAY_HOST, 2000); // 서비스로 못 찾으면 호스트 이름으로
+  if (ip != IPAddress((uint32_t)0)) return ip;
+
+  if (DISPLAY_IP[0]) { ip.fromString(DISPLAY_IP); return ip; }  // 그래도 없으면 고정 IP
+  return IPAddress((uint32_t)0);
+}
+
+// 끊긴 채 이만큼 지나면 mDNS 로 다시 찾아본다 — 디스플레이가 재부팅돼 IP 가 바뀌었을 수 있다.
+// (WebSocketsClient 는 늘 옛 IP 로만 재접속을 시도하므로, IP 가 바뀌면 여기서 새 IP 로 다시 건다.)
+#define DISPLAY_REBIND_MS 15000
+
+// 디스플레이를 찾아 WebSocket 을 연다.
+//   · 아직 못 붙었으면(wsStarted=false) 3초마다 다시 찾는다 — 리더를 먼저 켜 두고
+//     디스플레이를 나중에 켜도, 디스플레이가 뜨는 순간 이 재시도가 잡아 붙는다.
+//   · 이미 붙은 적 있는데 오래 끊겨 있으면 mDNS 로 다시 찾아, IP 가 바뀌었으면 새 IP 로 다시 건다.
 static void displayService() {
-  if (!online || wsStarted) return;
+  if (!online) return;
+
+  // 붙은 적 있고 지금도 붙어 있으면 라이브러리의 자동 재접속에 맡긴다.
+  if (wsStarted && (wsConnected || downSince == 0)) return;
+
+  // 오래 끊겨 있을 때만 다시 찾는다(막 끊긴 직후는 자동 재접속이 같은 IP 로 붙여 줄 수 있다).
+  if (wsStarted && (int32_t)(millis() - downSince) < DISPLAY_REBIND_MS) return;
+
   if ((int32_t)(millis() - resolveAt) < 0) return;
-  IPAddress ip = MDNS.queryHost(DISPLAY_HOST, 2000);
-  if (ip == IPAddress((uint32_t)0) && DISPLAY_IP[0]) ip.fromString(DISPLAY_IP);
+  resolveAt = millis() + 3000;
+
+  IPAddress ip = resolveDisplay();
   if (ip == IPAddress((uint32_t)0)) {
-    Serial.printf("[디스플레이] %s.local 을 못 찾음 — 5초 뒤 다시\n", DISPLAY_HOST);
-    resolveAt = millis() + 5000;
+    if (!wsStarted)
+      Serial.printf("[디스플레이] %s 를 아직 못 찾음 — 다시 찾는다(디스플레이가 켜지면 붙는다)\n", DISPLAY_HOST);
     return;
   }
-  displayIp = ip;
-  Serial.printf("[디스플레이] %s.local = %s\n", DISPLAY_HOST, ip.toString().c_str());
-  ws.begin(ip, DISPLAY_PORT, "/");
-  ws.onEvent(wsEvent);
-  ws.setReconnectInterval(2000);
-  wsStarted = true;
+
+  if (!wsStarted) {                                  // 첫 연결
+    displayIp = ip;
+    Serial.printf("[디스플레이] %s = %s\n", DISPLAY_HOST, ip.toString().c_str());
+    ws.begin(ip, DISPLAY_PORT, "/");
+    ws.onEvent(wsEvent);
+    ws.setReconnectInterval(2000);
+    wsStarted = true;
+    downSince  = millis();                            // 이 IP 로 못 붙는 채 오래 지나면 다시 찾도록(잘못 잡혔을 때 대비)
+    return;
+  }
+
+  if (ip != displayIp) {                             // 재부팅 등으로 IP 가 바뀌었다 — 새 IP 로 다시 건다
+    Serial.printf("[디스플레이] IP 바뀜 %s → %s — 다시 붙는다\n",
+                  displayIp.toString().c_str(), ip.toString().c_str());
+    displayIp = ip;
+    ws.disconnect();
+    ws.begin(ip, DISPLAY_PORT, "/");
+  }
+  downSince = millis();                              // 다음 재확인까지 또 기다린다(찾기를 계속 두드리지 않게)
 }
 
 // 보냈으면 true.
