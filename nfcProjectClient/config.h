@@ -24,18 +24,28 @@
 // 펀펀포인트 서버 주소·기기 키는 이제 여기에 없다.
 // 서버와 이야기하는 쪽은 디스플레이(nfcProject) 하나다 — 이 리더는 UID 만 넘긴다.
 
-// ── PN532 (I2C) 배선 — 배선도(PN532 × ESP32-C3) 그대로 ──────────────
-//   3V3→VCC · GPIO4→SDA · GPIO5→SCL · GPIO6→IRQ · GND→GND
+// ── PN532 (SPI) 배선 ────────────────────────────────────────────────
+//   3V3→VCC · GND→GND
+//   GPIO4→SCK · GPIO5→MISO · GPIO6→MOSI · GPIO7→SS(NSS)
+//   **모듈 딥스위치를 SPI 로 놓아야 한다** (Elechouse V3 는 보통 1:OFF 2:ON —
+//   보드 뒷면 표로 확인). I2C 로 두면 MISO 가 조용해 아무것도 안 읽힌다.
+//
+//   왜 I2C 가 아니라 SPI 인가 — 2026-09-24 실기에서 이 모듈의 I2C 쪽(SCL)이
+//   고장 난 것을 확인했다. 같은 모듈이 SPI 로는 v1.6 으로 멀쩡히 응답하고
+//   145초 소크에서 감시 실패 0·재초기화 0 이었다. 전원은 결백하다.
+//
+//   C3 기본 SPI 핀이 마침 4·5·6·7 이라 I2C 때 쓰던 GPIO4·5 를 그대로 쓴다.
 //   GPIO8·9 는 부팅 스트래핑 핀이라 쓰지 않는다.
-#define PIN_NFC_SDA  4
-#define PIN_NFC_SCL  5
-#define PIN_NFC_IRQ  6
-#define NFC_USE_IRQ  0                 // 쓰는 모듈에 IRQ 핀이 없다 → 늘 폴링. 1 = 있으면 IRQ, 없으면 자동으로 폴링
+#define PIN_NFC_SCK   4
+#define PIN_NFC_MISO  5
+#define PIN_NFC_MOSI  6
+#define PIN_NFC_SS    7
 
 // ── 부저 ──────────────────────────────────────────────────────────
-// C3 에는 화면이 없어 소리로 알린다.  GPIO7 → 부저(+) · GND → 부저(−)
+// C3 에는 화면이 없어 소리로 알린다.  GPIO10 → 부저(+) · GND → 부저(−)
+// **GPIO7 에서 옮겨 왔다** — SPI 의 SS 가 GPIO7 을 쓰기 때문이다. 선을 옮겨 꽂아야 한다.
 // GPIO2·8·9 는 스트래핑, 18·19 는 USB, 20·21 은 UART 라 피했다. -1 이면 소리를 끈다.
-#define PIN_BUZZER    7
+#define PIN_BUZZER   10
 #define BUZZER_ACTIVE 0                // 0 = 수동(패시브) 부저 — 음 높이를 낸다 / 1 = 능동(액티브) 부저 — 켜고 끄기만
 
 // ── 같은 카드 연속 처리 방지 ──────────────────────────────────────

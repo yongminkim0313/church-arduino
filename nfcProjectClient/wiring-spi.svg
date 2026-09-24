@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" width="960" height="720" role="img"
+     aria-label="ESP32-C3 와 PN532 를 SPI 로 잇는 배선도">
+  <title>ESP32-C3 × PN532 (SPI) 배선도</title>
+  <style>
+    :root { color-scheme: light dark; }
+    svg { --bg:#fbfaf8; --ink:#1c1b19; --dim:#6b6762; --line:#c9c4bc; --card:#ffffff; --note:#f2efe9; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg:#17161a; --ink:#ece9e4; --dim:#9b958d; --line:#3d3a36; --card:#222024; --note:#25232a; }
+    }
+    .bg   { fill: var(--bg); }
+    .card { fill: var(--card); stroke: var(--line); stroke-width: 2; }
+    .note { fill: var(--note); stroke: var(--line); stroke-width: 1.5; }
+    .t    { fill: var(--ink); font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; }
+    .d    { fill: var(--dim); font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .w    { stroke-width: 3.5; fill: none; stroke-linecap: round; }
+    .pad  { stroke: var(--line); stroke-width: 1.5; }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="960" height="720"/>
+
+  <text class="t" x="40" y="46" font-size="23" font-weight="700">ESP32-C3 × PN532 — SPI 배선</text>
+  <text class="d" x="40" y="72" font-size="14">ESP32-C3 SuperMini (네이티브 USB) · PN532 V3 · 2026-09-24 실기 확인 (v1.6, 145초 소크 감시 실패 0)</text>
+
+  <!-- ── 보드 두 개 ─────────────────────────────────────────── -->
+  <rect class="card" x="120" y="112" width="232" height="330" rx="10"/>
+  <text class="t" x="236" y="141" font-size="16" font-weight="650" text-anchor="middle">ESP32-C3 SuperMini</text>
+  <text class="d" x="236" y="161" font-size="12" text-anchor="middle">USB-C 로 전원·시리얼</text>
+
+  <rect class="card" x="648" y="112" width="232" height="330" rx="10"/>
+  <text class="t" x="764" y="141" font-size="16" font-weight="650" text-anchor="middle">PN532 V3 모듈</text>
+  <text class="d" x="764" y="161" font-size="12" text-anchor="middle">딥스위치 = SPI</text>
+
+  <!-- ── 배선 6 가닥 ────────────────────────────────────────── -->
+  <!-- 3V3 → VCC -->
+  <line class="w" x1="352" y1="205" x2="648" y2="205" stroke="#d1443e"/>
+  <text class="t mono" x="500" y="197" font-size="13" text-anchor="middle" font-weight="600">3V3</text>
+  <text class="t mono" x="344" y="210" font-size="13" text-anchor="end" font-weight="600">3V3</text>
+  <text class="t mono" x="656" y="210" font-size="13" font-weight="600">VCC</text>
+
+  <!-- GPIO4 → SCK -->
+  <line class="w" x1="352" y1="248" x2="648" y2="248" stroke="#2f6fb5"/>
+  <text class="t mono" x="500" y="240" font-size="13" text-anchor="middle" font-weight="600">SCK</text>
+  <text class="t mono" x="344" y="253" font-size="13" text-anchor="end" font-weight="600">GPIO4</text>
+  <text class="t mono" x="656" y="253" font-size="13" font-weight="600">SCK</text>
+
+  <!-- GPIO5 → MISO -->
+  <line class="w" x1="352" y1="291" x2="648" y2="291" stroke="#2e8b62"/>
+  <text class="t mono" x="500" y="283" font-size="13" text-anchor="middle" font-weight="600">MISO</text>
+  <text class="t mono" x="344" y="296" font-size="13" text-anchor="end" font-weight="600">GPIO5</text>
+  <text class="t mono" x="656" y="296" font-size="13" font-weight="600">MISO</text>
+
+  <!-- GPIO6 → MOSI -->
+  <line class="w" x1="352" y1="334" x2="648" y2="334" stroke="#c9782a"/>
+  <text class="t mono" x="500" y="326" font-size="13" text-anchor="middle" font-weight="600">MOSI</text>
+  <text class="t mono" x="344" y="339" font-size="13" text-anchor="end" font-weight="600">GPIO6</text>
+  <text class="t mono" x="656" y="339" font-size="13" font-weight="600">MOSI</text>
+
+  <!-- GPIO7 → SS -->
+  <line class="w" x1="352" y1="377" x2="648" y2="377" stroke="#8557b0"/>
+  <text class="t mono" x="500" y="369" font-size="13" text-anchor="middle" font-weight="600">SS</text>
+  <text class="t mono" x="344" y="382" font-size="13" text-anchor="end" font-weight="600">GPIO7</text>
+  <text class="t mono" x="656" y="382" font-size="13" font-weight="600">SS (NSS)</text>
+
+  <!-- GND → GND -->
+  <line class="w" x1="352" y1="420" x2="648" y2="420" stroke="#6b6762"/>
+  <text class="t mono" x="500" y="412" font-size="13" text-anchor="middle" font-weight="600">GND</text>
+  <text class="t mono" x="344" y="425" font-size="13" text-anchor="end" font-weight="600">GND</text>
+  <text class="t mono" x="656" y="425" font-size="13" font-weight="600">GND</text>
+
+  <!-- 핀 패드 -->
+  <g class="pad" fill="var(--card)">
+    <circle cx="352" cy="205" r="4.5"/><circle cx="648" cy="205" r="4.5"/>
+    <circle cx="352" cy="248" r="4.5"/><circle cx="648" cy="248" r="4.5"/>
+    <circle cx="352" cy="291" r="4.5"/><circle cx="648" cy="291" r="4.5"/>
+    <circle cx="352" cy="334" r="4.5"/><circle cx="648" cy="334" r="4.5"/>
+    <circle cx="352" cy="377" r="4.5"/><circle cx="648" cy="377" r="4.5"/>
+    <circle cx="352" cy="420" r="4.5"/><circle cx="648" cy="420" r="4.5"/>
+  </g>
+
+  <!-- ── 부저 (GPIO10) ──────────────────────────────────────── -->
+  <path class="w" d="M 200 442 L 200 512" stroke="#c9a227"/>
+  <path class="w" d="M 286 442 L 286 512" stroke="#6b6762"/>
+  <text class="t mono" x="192" y="470" font-size="13" text-anchor="end" font-weight="600">GPIO10</text>
+  <text class="t mono" x="294" y="470" font-size="13" font-weight="600">GND</text>
+  <g class="pad" fill="var(--card)">
+    <circle cx="200" cy="442" r="4.5"/><circle cx="286" cy="442" r="4.5"/>
+  </g>
+
+  <rect class="card" x="140" y="512" width="208" height="62" rx="9"/>
+  <text class="t" x="244" y="538" font-size="14" font-weight="650" text-anchor="middle">부저</text>
+  <text class="d mono" x="244" y="558" font-size="12" text-anchor="middle">(+) GPIO10 · (−) GND</text>
+  <text class="d" x="244" y="596" font-size="12" text-anchor="middle">GPIO7 에서 옮겨 왔다 — SS 가 7 을 쓴다</text>
+
+  <!-- ── 주의사항 ───────────────────────────────────────────── -->
+  <rect class="note" x="400" y="482" width="520" height="196" rx="10"/>
+
+  <text class="t" x="424" y="510" font-size="14" font-weight="700">꼭 볼 것</text>
+
+  <text class="t" x="424" y="536" font-size="13">▸ 모듈 딥스위치를 <tspan font-weight="700">SPI</tspan> 로. Elechouse V3 는 보통 1:OFF · 2:ON —</text>
+  <text class="d" x="436" y="554" font-size="12.5">보드 뒷면 표로 확인하라. I2C 로 두면 MISO 가 조용하다.</text>
+
+  <text class="t" x="424" y="580" font-size="13">▸ PN532 VCC·GND <tspan font-weight="700">2cm 안에</tspan> 100µF 전해 ∥ 0.1µF 세라믹</text>
+  <text class="d" x="436" y="598" font-size="12.5">태그를 대는 순간의 전류 피크를 받아 준다.</text>
+
+  <text class="t" x="424" y="624" font-size="13">▸ IRQ·RSTPDN 은 안 쓴다 — 폴링으로 돈다.</text>
+
+  <text class="t" x="424" y="650" font-size="13">▸ 피한 핀: GPIO2·8·9 스트래핑 / 18·19 USB / 20·21 UART</text>
+
+  <!-- 커패시터 기호 -->
+  <g stroke="#6b6762" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <path d="M 840 556 L 840 570"/>
+    <path d="M 826 570 L 854 570"/>
+    <path d="M 826 578 L 854 578"/>
+    <path d="M 840 578 L 840 592"/>
+  </g>
+  <text class="d mono" x="840" y="546" font-size="11" text-anchor="middle">VCC</text>
+  <text class="d mono" x="840" y="606" font-size="11" text-anchor="middle">GND</text>
+</svg>

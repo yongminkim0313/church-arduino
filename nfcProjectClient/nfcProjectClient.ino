@@ -2,8 +2,10 @@
 //
 // 보드: ESP32-C3 Mini / SuperMini (네이티브 USB) — 화면 없음. PN532 와 부저만 단다.
 //       (아래 '디스플레이' 는 이 보드가 아니라 와이파이 건너편의 nfcProject 원형 화면이다)
-// PN532: I2C — 3V3→VCC · GPIO4→SDA · GPIO5→SCL · GPIO6→IRQ · GND→GND (config.h)
-// 부저: GPIO7 → (+), GND → (−)  — 수동/능동은 config.h 의 BUZZER_ACTIVE
+// PN532: SPI — 3V3→VCC · GPIO4→SCK · GPIO5→MISO · GPIO6→MOSI · GPIO7→SS · GND→GND (config.h)
+//        모듈 딥스위치를 SPI 로 놓아야 한다. I2C 는 이 모듈에서 고장 나 못 쓴다(2026-09-24 확인).
+// 부저: GPIO10 → (+), GND → (−)  — 수동/능동은 config.h 의 BUZZER_ACTIVE
+//        (SPI 의 SS 가 GPIO7 을 쓰게 되어 부저를 GPIO10 으로 옮겼다)
 //   삑(높게 한 번)      디스플레이가 아는 키링으로 처리했다
 //   삐-삐(낮게 두 번)   서버에 없는 카드 · 디스플레이에 못 보냄 · 답이 없음
 //   삐리(올라가는 두 음) 켜져서 PN532 가 준비됨
@@ -24,7 +26,8 @@
 //   <UID>              카드를 댄 것처럼 처리한다(예: 04CE1B53D12A81) — 카드 없이 시험할 때
 //   next / prev / enable / toggle   디스플레이 화면 넘기기 명령을 그대로 보낸다
 //   status             연결 상태를 찍는다
-//   scan               I2C 버스를 훑는다(PN532 = 0x24)
+//   raw                CS 를 내리고 바이트를 그대로 주고받아 MISO 에 뭐가 오나 본다
+//   lines              SCK/MISO/MOSI/SS 선 상태
 //   beep               부저 소리 세 가지를 차례로 낸다
 //
 // ── 빌드 ────────────────────────────────────────────────────────────
@@ -32,7 +35,7 @@
 //   라이브러리: Adafruit PN532 (+ Adafruit BusIO) · ArduinoJson · WebSockets(by Markus Sattler)
 
 #include <Arduino.h>
-#include <Wire.h>
+#include <SPI.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
@@ -53,24 +56,22 @@ static void sndOk()    { beep(2700, 90); }                                   // 
 static void sndFail()  { beep(700, 160); delay(90); beep(700, 160); }       // 삐-삐
 static void sndReady() { beep(1800, 70); delay(40); beep(2700, 90); }       // 삐리
 
-// I2C 를 연다. PN532 는 응답이 준비될 때까지 SCL 을 직접 잡아 끈다(클럭 스트레칭) —
-// 카드 찾기는 재시도를 다 돌 때까지 오래 끄는데, ESP32 기본 타임아웃 50ms 로는 중간에
-// 포기해 버리고 그러면 모듈이 SCL 을 쥔 채 버스가 물려 모듈 전원을 내리기 전엔 안 풀린다.
-static void wireStart() {
-  Wire.begin(PIN_NFC_SDA, PIN_NFC_SCL);
-  Wire.setTimeOut(1000);
+// SPI 를 연다. I2C 와 달리 클럭 스트레칭이 없어 버스가 물려 죽는 일이 없다 —
+// 이 프로젝트가 I2C 를 버리고 SPI 로 온 이유이기도 하다.
+static void spiStart() {
+  pinMode(PIN_NFC_SS, OUTPUT);
+  digitalWrite(PIN_NFC_SS, HIGH);
+  SPI.begin(PIN_NFC_SCK, PIN_NFC_MISO, PIN_NFC_MOSI, PIN_NFC_SS);
 }
 
 // ── PN532 ───────────────────────────────────────────────────────────
-// IRQ 를 쓰면 '찾기' 를 걸어 두고 IRQ 가 LOW 로 떨어질 때만 읽는다 — 버스를 계속 두드리지 않는다.
-Adafruit_PN532 nfc(NFC_USE_IRQ ? PIN_NFC_IRQ : 255, 255 /* RST 안 씀 */, &Wire);
+// 라이브러리가 SPI 를 1MHz · LSB-first · MODE0 으로 잡는다(고정이라 바꿀 수 없다).
+// IRQ 는 쓰지 않는다 — SPI 배선에 IRQ 선이 없고, 폴링으로 충분하다.
+Adafruit_PN532 nfc(PIN_NFC_SS, &SPI);
 static bool     nfcReady      = false;
-static bool     detectArmed   = false;   // 찾기(InListPassiveTarget)를 걸어 둔 상태인가
-static uint32_t armedAt       = 0;
 static uint32_t nfcRetryAt    = 0;       // PN532 를 못 찾았을 때 다시 찾아볼 시각
 static char     lastUid[24]   = "";
 static uint32_t lastUidAt     = 0;
-static bool     useIrq        = false;   // IRQ 선이 실제로 이어져 있을 때만 켠다(nfcBegin 이 확인)
 
 // ── 와이파이 (우선순위 3개) ─────────────────────────────────────────
 struct WifiAp { const char *ssid; const char *pass; };
@@ -198,42 +199,40 @@ static void uidToHex(const uint8_t *u, uint8_t len, char *out, size_t cap) {
   out[n] = '\0';
 }
 
-// I2C 버스를 훑어 응답하는 주소를 찍는다. PN532 는 0x24 — 안 보이면 배선·모드 스위치 문제다.
-static void i2cScan() {
-  int found = 0;
-  Serial.printf("[I2C] SDA=%d SCL=%d 훑는 중:", PIN_NFC_SDA, PIN_NFC_SCL);
-  for (uint8_t a = 1; a < 127; a++) {
-    Wire.beginTransmission(a);
-    if (Wire.endTransmission() == 0) { Serial.printf(" 0x%02X", a); found++; }
+// CS 를 내린 채 바이트를 그대로 주고받아 MISO 에 뭐가 오나 본다 — 라이브러리를 안 거친다.
+// PN532 가 SPI 모드로 살아 있으면 상태 바이트 01(준비됨)이 돌아온다.
+static void rawProbe() {
+  uint8_t got[8];
+  SPI.beginTransaction(SPISettings(1000000UL, LSBFIRST, SPI_MODE0));
+  digitalWrite(PIN_NFC_SS, LOW);
+  delay(2);                                  // 깨우기 — CS 를 2ms 붙잡는다
+  got[0] = SPI.transfer(0x02);               // SPI_STATREAD
+  for (uint8_t i = 1; i < 8; i++) got[i] = SPI.transfer(0x00);
+  digitalWrite(PIN_NFC_SS, HIGH);
+  SPI.endTransaction();
+
+  Serial.print("[raw] 되돌아온 바이트:");
+  uint8_t same = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    Serial.printf(" %02X", got[i]);
+    if (got[i] == got[0]) same++;
   }
-  Serial.println(found ? "" : " 아무것도 없음");
-  Serial.printf("[I2C] IRQ(GPIO%d) = %s\n", PIN_NFC_IRQ, digitalRead(PIN_NFC_IRQ) ? "HIGH" : "LOW");
+  Serial.println();
+  // PN532 를 이미 잡아 둔 뒤에는 이 날것 거래에 상태 바이트가 안 돌아온다(라이브러리가
+  // 모듈을 정상 모드로 올려 둔 상태다). 그러니 이 판정은 **PN532 를 못 찾았을 때만** 믿어라.
+  if (same == 8) Serial.printf("[raw] 전부 같은 값 — MISO 가 조용하다.%s\n",
+                               nfcReady ? " (PN532 는 이미 준비됨 — 이 줄은 무시해라)"
+                                        : " 선·모드 스위치(SPI)·모듈 전원을 봐라");
+  else           Serial.println("[raw] 섞여 온다 — 모듈이 말하고 있다. 배선은 닿았다");
 }
 
-// 배선이 어긋났을 때 — 여러 핀 조합으로 0x24(PN532)를 찾아본다. 끝나면 원래 핀으로 되돌린다.
-static void i2cScanAll() {
-  static const int8_t pins[] = {0, 1, 2, 3, 4, 5, 6, 7, 10};
-  int hits = 0;
-  Serial.println("[I2C] 핀 조합을 모두 훑는 중(0x24 찾기)...");
-  for (int8_t sda : pins) for (int8_t scl : pins) {
-    if (sda == scl) continue;
-    Wire.end();
-    Wire.begin(sda, scl, 100000);
-    Wire.beginTransmission(0x24);
-    if (Wire.endTransmission() == 0) { Serial.printf("  → SDA=GPIO%d · SCL=GPIO%d 에서 PN532 응답\n", sda, scl); hits++; }
-  }
-  Wire.end();
-  wireStart();
-  Serial.println(hits ? "[I2C] 끝" : "[I2C] 어느 조합에서도 0x24 가 없음 — 전원(3V3·GND)·모드 스위치(I2C) 확인");
-}
-
-// 선이 살아 있는지 — 핀을 내부 풀다운(약 45kΩ)으로 당겨 두고 읽는다. PN532 모듈이 켜져 있고
-// 선이 이어져 있으면 모듈의 풀업(보통 4.7kΩ)이 이겨 HIGH, 끊겼거나 모듈 전원이 없으면 LOW.
+// 선 상태. SPI 선에는 풀업이 없으니 I2C 때만큼 결정적이지 않다 — 잡히는 건 단락(둘 다 0)뿐이다.
+// 특히 **MISO 가 '떠 있음' 으로 나오는 건 정상이다**: CS 가 HIGH 인 동안 PN532 는 MISO 를
+// 하이임피던스로 놓는다. 연결 판정은 raw 로 한다.
 static void lineCheck() {
-  Wire.end();
-  const int8_t ps[] = {PIN_NFC_SDA, PIN_NFC_SCL, PIN_NFC_IRQ};
-  const char *nm[]  = {"SDA", "SCL", "IRQ"};
-  for (int i = 0; i < 3; i++) {
+  const int8_t ps[] = {PIN_NFC_SCK, PIN_NFC_MISO, PIN_NFC_MOSI, PIN_NFC_SS};
+  const char *nm[]  = {"SCK", "MISO", "MOSI", "SS"};
+  for (int i = 0; i < 4; i++) {
     pinMode(ps[i], INPUT_PULLDOWN);
     delay(5);
     const int dn = digitalRead(ps[i]);
@@ -241,12 +240,14 @@ static void lineCheck() {
     delay(5);
     const int up = digitalRead(ps[i]);
     Serial.printf("[선] %s(GPIO%d) 풀다운=%d 풀업=%d → %s\n", nm[i], ps[i], dn, up,
-                  dn ? "이어짐(모듈 풀업이 보인다)"
-                     : up ? "떠 있음 — 선이 안 닿았다"
-                          : "LOW 로 붙잡혀 있음 — GND 에 닿았거나 모듈이 버스를 쥐고 있다");
+                  (dn == 0 && up == 0) ? "LOW 로 붙잡혀 있음 — GND 단락이거나 남이 쥐고 있다"
+                  : (dn == 1 && up == 1) ? "HIGH 로 밀려 있음 — 밖에서 당기고 있다"
+                                         : "하이임피던스(정상)");
   }
-  pinMode(PIN_NFC_IRQ, INPUT_PULLUP);
-  wireStart();
+  // SPI.begin() 은 이미 초기화돼 있으면 그냥 돌아간다 — 핀을 매트릭스에 다시 안 붙인다.
+  // 위에서 pinMode 로 떼어 놨으니 반드시 end() 부터 불러야 복구된다(안 그러면 그대로 죽는다).
+  SPI.end();
+  spiStart();
 }
 
 static bool nfcScanned = false;   // 못 찾았을 때 스캔은 한 번만 찍는다
@@ -257,26 +258,16 @@ static void nfcBegin() {
   nfcReady = ver != 0;
   if (nfcReady) {
     nfc.SAMConfig();
-    nfc.setPassiveActivationRetries(0x10);   // 폴링 모드에서 한 번 훑는 시간을 짧게
-    // IRQ 선이 있나 — PN532 는 쉴 때 IRQ 를 HIGH 로 민다. 풀다운으로 당겨도 HIGH 면 이어진 것이다.
-    // 배선도에서 IRQ 는 '생략 가능' 이라, 없으면 폴링으로 돈다(IRQ 만 믿으면 카드를 영영 못 본다).
-    useIrq = false;
-    if (NFC_USE_IRQ) {
-      pinMode(PIN_NFC_IRQ, INPUT_PULLDOWN);
-      delay(5);
-      useIrq = digitalRead(PIN_NFC_IRQ) == HIGH;
-      pinMode(PIN_NFC_IRQ, useIrq ? INPUT : INPUT_PULLUP);
-    }
-    Serial.printf("[NFC] PN532 준비됨 (v%d.%d, %s)\n", (int)((ver >> 16) & 0xFF), (int)((ver >> 8) & 0xFF),
-                  useIrq ? "IRQ" : (NFC_USE_IRQ ? "IRQ 선 없음 → 폴링" : "폴링"));
+    nfc.setPassiveActivationRetries(0x10);   // 한 번 훑는 시간을 짧게
+    Serial.printf("[NFC] PN532 준비됨 (v%d.%d, SPI 폴링)\n",
+                  (int)((ver >> 16) & 0xFF), (int)((ver >> 8) & 0xFF));
     sndReady();
   } else {
-    Serial.printf("[NFC] PN532 를 못 찾음 — 배선(SDA=%d, SCL=%d)·I2C 모드 스위치 확인. 5초 뒤 다시\n",
-                  PIN_NFC_SDA, PIN_NFC_SCL);
+    Serial.printf("[NFC] PN532 를 못 찾음 — 배선(SCK=%d, MISO=%d, MOSI=%d, SS=%d)·모듈 딥스위치가 SPI 인지 확인. 5초 뒤 다시\n",
+                  PIN_NFC_SCK, PIN_NFC_MISO, PIN_NFC_MOSI, PIN_NFC_SS);
     nfcRetryAt = millis() + 5000;
-    if (!nfcScanned) { nfcScanned = true; i2cScan(); }
+    if (!nfcScanned) { nfcScanned = true; rawProbe(); }
   }
-  detectArmed = false;
 }
 
 // 읽은 UID 를 거른다: ISO14443A UID 는 4·7·10 바이트뿐이고, 우리 키링은 7바이트(NTAG213)다.
@@ -284,7 +275,6 @@ static void nfcBegin() {
 static void gotUid(const uint8_t *uid, uint8_t len) {
   char hex[48];
   uidToHex(uid, len > 16 ? 16 : len, hex, sizeof(hex));   // 길이가 이상해도 보이게 찍는다
-  Serial.println(">>>>");
   if (len != 7 && len != 10) {
     Serial.printf("[NFC] %u바이트 UID %s — 넘긴다%s\n", (unsigned)len, hex,
                   len == 4 ? " (휴대폰·교통카드)" : " (예상 밖 길이 — 프레임이 어긋났다)");
@@ -304,24 +294,10 @@ static void nfcService() {
     if ((int32_t)(millis() - nfcRetryAt) >= 0) nfcBegin();
     return;
   }
-  // readDetectedPassiveTargetID 는 응답의 길이 바이트를 믿고 복사한다 — 버퍼를 넉넉히 잡는다.
+  // 라이브러리가 응답의 길이 바이트를 믿고 복사한다 — 버퍼를 넉넉히 잡는다.
   uint8_t uid[255] = {0};
   uint8_t len = 0;
-  if (useIrq) {
-  if (!detectArmed) {
-    nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A);   // 카드가 오면 IRQ 가 LOW 로
-    detectArmed = true;
-    armedAt = millis();
-  }
-  if (digitalRead(PIN_NFC_IRQ) == LOW) {
-    detectArmed = false;
-    if (nfc.readDetectedPassiveTargetID(uid, &len)) gotUid(uid, len);
-  } else if (millis() - armedAt > 60000) {
-    detectArmed = false;                       // 1분 넘게 조용하면 찾기를 새로 건다(어긋남 방지)
-  }
-  } else {
-    if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &len, 60)) gotUid(uid, len);
-  }
+  if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &len, 60)) gotUid(uid, len);
 }
 
 // 카드 읽기만 따로 시험한다 — IRQ 분기를 건너뛰고 라이브러리의 블로킹 폴링을 그대로 쓴다.
@@ -343,7 +319,6 @@ static void nfcProbe() {
     }
   }
   Serial.printf("[프로브] 끝 — 시도 %d회 · 읽음 %d회\n", tries, hits);
-  detectArmed = false;                       // 프로브가 PN532 상태를 흔들었으니 찾기를 새로 건다
 }
 
 // ── 시리얼 ──────────────────────────────────────────────────────────
@@ -363,22 +338,14 @@ static void handleLine(char *s) {
   } else if (!strcmp(s, "probe")) {
     nfcProbe();
   } else if (!strncmp(s, "rty ", 4)) {
-    // 카드찾기 재시도 횟수 — 적을수록 PN532 가 빨리 "없음" 을 답해 SCL 을 짧게 잡는다
+    // 카드찾기 재시도 횟수 — 적을수록 PN532 가 빨리 "없음" 을 답해 폴링 한 바퀴가 짧아진다
     const uint8_t n = (uint8_t)strtol(s + 4, nullptr, 0);
     nfc.setPassiveActivationRetries(n);
-    detectArmed = false;
     Serial.printf("[NFC] 카드찾기 재시도 = 0x%02X\n", n);
-  } else if (!strcmp(s, "irq")) {
-    useIrq = !useIrq;
-    detectArmed = false;
-    pinMode(PIN_NFC_IRQ, useIrq ? INPUT : INPUT_PULLUP);
-    Serial.printf("[NFC] 이제 %s 로 돈다\n", useIrq ? "IRQ" : "폴링");
   } else if (!strcmp(s, "lines")) {
     lineCheck();
-  } else if (!strcmp(s, "scanall")) {
-    i2cScanAll();
-  } else if (!strcmp(s, "scan")) {
-    i2cScan();
+  } else if (!strcmp(s, "raw")) {
+    rawProbe();
   } else if (!strcmp(s, "status")) {
     Serial.printf("[상태] 와이파이 %s · 디스플레이 %s · PN532 %s\n",
                   online ? WiFi.localIP().toString().c_str() : "끊김",
@@ -404,8 +371,7 @@ void setup() {
   Serial.println("\n=== nfcProjectClient — PN532 → nfcProject 디스플레이 ===");
 
   if (PIN_BUZZER >= 0) { pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW); }
-  wireStart();
-  if (NFC_USE_IRQ) pinMode(PIN_NFC_IRQ, INPUT_PULLUP);
+  spiStart();
   nfcBegin();
 
   WiFi.mode(WIFI_STA);
