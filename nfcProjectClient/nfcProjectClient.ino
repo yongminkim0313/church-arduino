@@ -26,6 +26,8 @@
 //   <UID>              카드를 댄 것처럼 처리한다(예: 04CE1B53D12A81) — 카드 없이 시험할 때
 //   next / prev / enable / toggle   디스플레이 화면 넘기기 명령을 그대로 보낸다
 //   status             연결 상태를 찍는다
+//   cpu <mhz>          CPU 클럭 (160/80 — 낮추면 시원해진다. 80 아래는 USB 가 끊겨 거부)
+//   poll <ms>          폴링 사이 쉬는 시간 (클수록 시원하고 반응이 느려진다. 0 = 쉬지 않음)
 //   raw                CS 를 내리고 바이트를 그대로 주고받아 MISO 에 뭐가 오나 본다
 //   lines              SCK/MISO/MOSI/SS 선 상태
 //   beep               부저 소리 세 가지를 차례로 낸다
@@ -258,7 +260,7 @@ static void nfcBegin() {
   nfcReady = ver != 0;
   if (nfcReady) {
     nfc.SAMConfig();
-    nfc.setPassiveActivationRetries(0x10);   // 한 번 훑는 시간을 짧게
+    nfc.setPassiveActivationRetries(NFC_RETRIES);   // 한 번 훑는 시간 — 짧을수록 RF 를 덜 켠다
     Serial.printf("[NFC] PN532 준비됨 (v%d.%d, SPI 폴링)\n",
                   (int)((ver >> 16) & 0xFF), (int)((ver >> 8) & 0xFF));
     sndReady();
@@ -289,11 +291,20 @@ static void gotUid(const uint8_t *uid, uint8_t len) {
   handleTag(hex);
 }
 
+// 폴링 사이에 쉰다. 한 번 훑을 때마다 PN532 가 RF 필드를 켜 전류를 쓰므로,
+// 쉬는 시간이 그대로 모듈 발열로 이어진다. 120ms 면 사람이 카드를 대고 있는
+// 시간(보통 0.5초 넘는다)보다 훨씬 짧아 놓치지 않는다.
+static uint32_t nfcPollAt = 0;
+// 발열은 실물을 만져 보며 정하는 수밖에 없다. 구운 채로 `poll` 로 바꿔 볼 수 있게 변수로 둔다.
+static uint32_t nfcPollEvery = NFC_POLL_EVERY_MS;
+
 static void nfcService() {
   if (!nfcReady) {
     if ((int32_t)(millis() - nfcRetryAt) >= 0) nfcBegin();
     return;
   }
+  if ((int32_t)(millis() - nfcPollAt) < 0) return;
+  nfcPollAt = millis() + nfcPollEvery;
   // 라이브러리가 응답의 길이 바이트를 믿고 복사한다 — 버퍼를 넉넉히 잡는다.
   uint8_t uid[255] = {0};
   uint8_t len = 0;
@@ -342,6 +353,15 @@ static void handleLine(char *s) {
     const uint8_t n = (uint8_t)strtol(s + 4, nullptr, 0);
     nfc.setPassiveActivationRetries(n);
     Serial.printf("[NFC] 카드찾기 재시도 = 0x%02X\n", n);
+  } else if (!strncmp(s, "cpu ", 4)) {
+    const uint32_t mhz = strtoul(s + 4, nullptr, 10);
+    if (mhz < 80) { Serial.println("[CPU] 80MHz 아래로는 USB 시리얼이 끊긴다 — 거부"); return; }
+    setCpuFrequencyMhz(mhz);
+    Serial.printf("[CPU] %uMHz\n", (unsigned)getCpuFrequencyMhz());
+  } else if (!strncmp(s, "poll ", 5)) {
+    nfcPollEvery = strtoul(s + 5, nullptr, 10);
+    Serial.printf("[NFC] 폴링 간격 = %lums%s\n", (unsigned long)nfcPollEvery,
+                  nfcPollEvery ? "" : " (쉬지 않는다)");
   } else if (!strcmp(s, "lines")) {
     lineCheck();
   } else if (!strcmp(s, "raw")) {
@@ -351,6 +371,9 @@ static void handleLine(char *s) {
                   online ? WiFi.localIP().toString().c_str() : "끊김",
                   wsConnected ? displayIp.toString().c_str() : "안 붙음",
                   nfcReady ? "준비됨" : "없음");
+    Serial.printf("[상태] CPU %uMHz · 폴링 %lums · 재시도 0x%02X · 모뎀슬립 %s\n",
+                  (unsigned)getCpuFrequencyMhz(), (unsigned long)nfcPollEvery,
+                  NFC_RETRIES, WIFI_MODEM_SLEEP ? "켬" : "끔");
   } else {
     for (char *p = s; *p; p++) *p = toupper(*p);  // UID 는 대문자로
     handleTag(s);
@@ -370,12 +393,21 @@ void setup() {
   delay(300);
   Serial.println("\n=== nfcProjectClient — PN532 → nfcProject 디스플레이 ===");
 
+  // 발열을 줄인다 — 와이파이를 올리기 전에 클럭부터 내린다.
+  setCpuFrequencyMhz(CPU_MHZ);
+  Serial.printf("[전원] CPU %uMHz · 폴링 %lums · 재시도 0x%02X · 모뎀슬립 %s\n",
+                (unsigned)getCpuFrequencyMhz(), (unsigned long)nfcPollEvery,
+                NFC_RETRIES, WIFI_MODEM_SLEEP ? "켬" : "끔");
+
   if (PIN_BUZZER >= 0) { pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW); }
   spiStart();
   nfcBegin();
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
+  // 모뎀 슬립 — C3 발열의 가장 큰 몫이다. 재우면 라디오가 DTIM 사이에 꺼져
+  // 평균 전류가 크게 준다. 대신 디스플레이로 가는 왕복에 수십~수백 ms 가 붙는데,
+  // ACK_WAIT_MS(4초) 안이라 소리 판정에는 지장이 없다.
+  WiFi.setSleep(WIFI_MODEM_SLEEP ? true : false);
   wifiService();
 }
 
