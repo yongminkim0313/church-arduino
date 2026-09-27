@@ -14,6 +14,13 @@ TTGO T-Display(ST7789V, TFT_eSPI)의 pushImage 용 배열을 생성한다.
         --crop-content --fit contain --margin 4 --sharpen 80 \
         -o ../ChurchLogoOnly/logo.h
 
+    # 투명 PNG 아이콘 — 투명한 곳을 0xF81F(자홍)로 비워 두고, 반투명 가장자리는 --bg 와 섞는다.
+    # 헤더에 CONNECTED_W · CONNECTED_H · CONNECTED_TRANSPARENT 가 함께 들어간다.
+    python3 img2rgb565_dither.py 연결.png --width 50 --height 35 --fit contain \
+        --transparent --bg "#FFAE31" --var CONNECTED -o connected.h
+    #   그릴 때: gfx->draw16bitRGBBitmapWithTranColor(x, y, (uint16_t *)CONNECTED,
+    #                CONNECTED_TRANSPARENT, CONNECTED_W, CONNECTED_H);
+
 필요: Pillow  →  pip3 install pillow
 """
 import argparse
@@ -40,6 +47,23 @@ def flatten(img: Image.Image, bg):
         base.paste(img.convert("RGBA"), mask=img.convert("RGBA").split()[-1])
         return base
     return img.convert("RGB")
+
+
+TRANSPARENT_KEY = 0xF81F      # 자홍 — 그림에 거의 안 나오는 색. 이 값인 점은 그리지 않는다
+ALPHA_CUT = 100               # 알파가 이보다 작으면 투명으로 친다
+
+
+def fit_alpha(alpha: Image.Image, tw: int, th: int, mode: str, margin: int):
+    """알파 채널을 fit_into 와 같은 자리·크기로 옮긴다(여백은 투명)."""
+    if mode == "stretch":
+        return alpha.resize((tw, th), Image.LANCZOS)
+    aw, ah = max(1, tw - margin * 2), max(1, th - margin * 2)
+    ratio = min(aw / alpha.width, ah / alpha.height) if mode == "contain" \
+        else max(aw / alpha.width, ah / alpha.height)
+    nw, nh = max(1, round(alpha.width * ratio)), max(1, round(alpha.height * ratio))
+    canvas = Image.new("L", (tw, th), 0)
+    canvas.paste(alpha.resize((nw, nh), Image.LANCZOS), ((tw - nw) // 2, (th - nh) // 2))
+    return canvas
 
 
 def crop_content(img: Image.Image, bg, tol=12):
@@ -106,15 +130,26 @@ def dither(img: Image.Image):
     return out, w, h
 
 
-def emit_header(data, w, h, var, out_path):
+def emit_header(data, w, h, var, out_path, transparent=False):
     lines = []
     lines.append("#pragma once")
     lines.append("// 자동 생성됨: img2rgb565_dither.py (Floyd-Steinberg 디더링, RGB565)")
     lines.append(f"// 크기: {w} x {h}")
     lines.append("")
+    # 그림마다 이름이 다른 크기 — 헤더를 여러 개 함께 넣을 때는 이것을 쓴다.
+    lines.append(f"#define {var}_W {w}")
+    lines.append(f"#define {var}_H {h}")
+    if transparent:
+        lines.append(f"#define {var}_TRANSPARENT 0x{TRANSPARENT_KEY:04X}  "
+                     f"// 이 색인 점은 그리지 않는다(draw16bitRGBBitmapWithTranColor)")
+    lines.append("")
+    # 예전 스케치(ChurchLogo* 등)가 쓰는 이름. 헤더 여러 개를 넣으면 먼저 들어온 값이 남으므로
+    # 그때는 위의 {var}_W · {var}_H 를 쓸 것.
+    lines.append("#ifndef LOGO_W")
     lines.append("#define HAVE_LOGO_IMAGE 1")
     lines.append(f"#define LOGO_W {w}")
     lines.append(f"#define LOGO_H {h}")
+    lines.append("#endif")
     lines.append("")
     lines.append(f"const uint16_t {var}[{w} * {h}] PROGMEM = {{")
     row = "  "
@@ -154,9 +189,15 @@ def main():
     ap.add_argument("--sharpen", type=int, default=0,
                     help="축소 후 언샤프 마스크 강도 %% (0=끔, 권장 60~120)")
     ap.add_argument("--preview", default=None, help="변환 결과를 PNG 로도 저장할 경로")
+    ap.add_argument("--transparent", action="store_true",
+                    help="PNG 의 투명한 곳을 0xF81F(자홍)로 남긴다. 반투명 가장자리는 --bg 와 섞으므로 "
+                         "--bg 를 그림이 놓일 배경색으로 줄 것")
     args = ap.parse_args()
 
     src = Image.open(args.image)
+    alpha = src.convert("RGBA").split()[-1] if args.transparent else None
+    if alpha is not None and args.crop_content:
+        sys.exit("--transparent 와 --crop-content 는 함께 쓸 수 없습니다(알파 자리가 어긋난다)")
     img = flatten(src, args.bg)
 
     if args.crop_content:
@@ -166,6 +207,8 @@ def main():
         tw = args.width or img.width
         th = args.height or img.height
         img = fit_into(img, tw, th, args.fit, args.bg, args.margin)
+        if alpha is not None:
+            alpha = fit_alpha(alpha, tw, th, args.fit, args.margin)
 
     if args.sharpen > 0:
         # 언샤프 마스크: 축소하며 뭉개진 얇은 획의 대비를 되살린다
@@ -181,6 +224,16 @@ def main():
     else:
         data, w, h = dither(img)
 
+    if alpha is not None:
+        cut = 0
+        for i, a in enumerate(alpha.getdata()):
+            if a < ALPHA_CUT:
+                data[i] = TRANSPARENT_KEY
+                cut += 1
+            elif data[i] == TRANSPARENT_KEY:
+                data[i] = TRANSPARENT_KEY - 1   # 우연히 투명색과 같아진 점은 한 끗 비킨다
+        print(f"투명한 점: {cut} / {w * h}")
+
     if args.preview:
         prev = Image.new("RGB", (w, h))
         prev.putdata([((v >> 11 & 0x1F) * 255 // 31,
@@ -189,7 +242,7 @@ def main():
         prev.save(args.preview)
         print(f"미리보기 저장: {args.preview}")
 
-    emit_header(data, w, h, args.var, args.out)
+    emit_header(data, w, h, args.var, args.out, transparent=alpha is not None)
 
 
 if __name__ == "__main__":
