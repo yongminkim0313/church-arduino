@@ -910,33 +910,61 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t 
   }
 }
 
-// ── 와이파이 (우선순위 3개, config.h) ───────────────────────────────
-// 0→1→2 순서로 붙어 본다. 한 곳에 WIFI_TRY_MS 만큼 붙어 보고 안 되면 다음 순위로,
-// 셋 다 안 되면 처음(0순위)으로 돌아가 계속 반복한다(루프). WiFi.begin() 은 기다리지 않고
+// ── 와이파이 (우선순위 4개, config.h) ───────────────────────────────
+// 0→1→2→3 순서로 붙어 본다. 한 곳에 WIFI_TRY_MS 만큼 붙어 보고 안 되면 다음 순위로,
+// 넷 다 안 되면 처음(0순위)으로 돌아가 계속 반복한다(루프). WiFi.begin() 은 기다리지 않고
 // 바로 돌아오므로 붙는 동안에도 loop 가 멈추지 않는다 — 터치로 그림이 바뀌어야 하기 때문이다.
 struct WifiAp { const char *ssid; const char *pass; };
 static const WifiAp WIFI_APS[] = {
   { WIFI_SSID_0, WIFI_PASS_0 },
   { WIFI_SSID_1, WIFI_PASS_1 },
   { WIFI_SSID_2, WIFI_PASS_2 },
+  { WIFI_SSID_3, WIFI_PASS_3 },
 };
 static const int WIFI_AP_COUNT = sizeof(WIFI_APS) / sizeof(WIFI_APS[0]);
 
-static const uint32_t WIFI_TRY_MS = 8000;   // 한 순위에 이만큼 붙어 보고 안 되면 다음 순위로
-static int      wifiIdx   = 0;              // 지금 시도 중인 순위(0 부터)
-static uint32_t wifiTryAt = 0;
-static bool     wifiTried = false;
+// 한 순위에 이만큼 붙어 보고 안 되면 다음 순위로. 부팅 직후 첫 시도는 스캔부터 하느라
+// 느려서 8초로는 붙을 수 있는 AP 도 놓쳤다 — 넉넉히 준다.
+static const uint32_t WIFI_TRY_MS    = 15000;
+// disconnect() 는 STA 가 실제로 빠지기 전에 돌아온다. 곧바로 begin() 을 부르면
+// "sta is connecting, cannot set config" 로 거부되어 그 순위는 시도조차 못 하고 넘어간다.
+// 그래서 끊기를 건 뒤 이만큼 틈을 두고 begin() 한다(기다리는 동안에도 loop 는 돈다).
+static const uint32_t WIFI_SETTLE_MS = 300;
+static const int      WIFI_SETTLE_MAX = 10;   // 그래도 거부되면 이만큼까지만 다시 걸어 본다
+
+static int      wifiIdx    = 0;             // 지금 시도 중인 순위(0 부터)
+static uint32_t wifiTryAt  = 0;
+static bool     wifiTried  = false;
+static bool     wifiParked = false;         // 끊기는 걸었고 begin() 을 기다리는 중
+static uint32_t wifiParkAt = 0;
+static int      wifiParkTries = 0;
 
 static void wifiService() {
-  if (WiFi.status() == WL_CONNECTED) return;
+  if (WiFi.status() == WL_CONNECTED) { wifiParked = false; wifiParkTries = 0; return; }
+
+  if (wifiParked) {                                              // 틈을 둔 뒤 실제로 건다
+    if (millis() - wifiParkAt < WIFI_SETTLE_MS) return;
+    if (WiFi.begin(WIFI_APS[wifiIdx].ssid, WIFI_APS[wifiIdx].pass) == WL_CONNECT_FAILED
+        && wifiParkTries < WIFI_SETTLE_MAX) {
+      wifiParkTries++;                                           // 아직 안 빠졌다 — 틈을 더 주고 다시
+      wifiParkAt = millis();
+      return;
+    }
+    wifiParked    = false;
+    wifiParkTries = 0;
+    wifiTryAt     = millis();
+    wifiTried     = true;
+    Serial.printf("[와이파이] %d순위 '%s' 에 붙어 보는 중\n", wifiIdx + 1, WIFI_APS[wifiIdx].ssid);
+    return;
+  }
+
   if (wifiTried && millis() - wifiTryAt < WIFI_TRY_MS) return;   // 지금 순위에 붙는 중 — 더 기다린다
 
   if (wifiTried) wifiIdx = (wifiIdx + 1) % WIFI_AP_COUNT;        // 실패 → 다음 순위(끝이면 처음으로)
   WiFi.disconnect();
-  WiFi.begin(WIFI_APS[wifiIdx].ssid, WIFI_APS[wifiIdx].pass);
-  wifiTryAt = millis();
-  wifiTried = true;
-  Serial.printf("[와이파이] %d순위 '%s' 에 붙어 보는 중\n", wifiIdx + 1, WIFI_APS[wifiIdx].ssid);
+  wifiParkAt    = millis();
+  wifiParked    = true;
+  wifiParkTries = 0;
 }
 
 // 와이파이가 붙으면 mDNS 와 WebSocket 서버를 켠다(한 번만).

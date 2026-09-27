@@ -1,17 +1,18 @@
 #pragma once
 // nfcProject 설정 — 이 파일만 고치면 된다(코드는 건드리지 않는다).
 
-// ── 와이파이 (우선순위 3개) ───────────────────────────────────────
-// 0→1→2 순서대로 붙어 본다. 한 곳에 WIFI_TRY_MS 만큼 붙어 보고 안 되면 다음으로,
-// 셋 다 안 되면 처음으로 돌아가 반복(루프). ChurchSecrets.h 의 값과 같다.
-// ※ ESP32 는 2.4GHz 만 본다. "주향한교회_5G" 가 5GHz 전용이면 못 붙고 다음(2순위)으로 넘어간다.
-//   교회에서 2.4GHz SSID 가 따로 있으면 1순위를 그걸로 바꾸는 게 빠르다.
-#define WIFI_SSID_0 "주향한교회_5G"     // 1순위 — 교회(기기를 두는 곳)
-#define WIFI_PASS_0 "ju123456"
-#define WIFI_SSID_1 "3hans_home"         // 2순위
-#define WIFI_PASS_1 "!Yehan1229"
-#define WIFI_SSID_2 "용민 iPhone"        // 3순위
-#define WIFI_PASS_2 "12345678"
+// ── 와이파이 (우선순위 4개) ───────────────────────────────────────
+// 0→1→2→3 순서대로 붙어 본다. 한 곳에 WIFI_TRY_MS 만큼 붙어 보고 안 되면 다음으로,
+// 넷 다 안 되면 처음으로 돌아가 반복(루프).
+// ※ ESP32 는 2.4GHz 만 본다. "주향한교회_5G" 가 5GHz 전용이면 못 붙고 다음 순위로 넘어간다.
+#define WIFI_SSID_0 "olleh_WiFi_1E5C"   // 1순위 — 기기를 두는 곳
+#define WIFI_PASS_0 "0000000124"
+#define WIFI_SSID_1 "주향한교회_5G"     // 2순위 — 교회
+#define WIFI_PASS_1 "ju123456"
+#define WIFI_SSID_2 "3hans_home"         // 3순위
+#define WIFI_PASS_2 "!Yehan1229"
+#define WIFI_SSID_3 "용민 iPhone"        // 4순위
+#define WIFI_PASS_3 "12345678"
 
 // ── mDNS ──────────────────────────────────────────────────────────
 // 붙은 뒤 http/ws 로 이 이름으로 찾을 수 있다: nfc-display.local
