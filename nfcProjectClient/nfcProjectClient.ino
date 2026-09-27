@@ -12,11 +12,21 @@
 //        PN532 VCC·GND 바로 옆에 100µF 전해 + 0.1µF 세라믹을 병렬로 — 없으면 태그 순간 리셋된다.
 //
 // 이 리더가 하는 일은 **읽어서 넘기는 것까지**다 —
-//   1) config.h 의 와이파이에 붙는다
-//   2) 디스플레이를 mDNS(nfc-display.local)로 찾아 ws://<IP>:81/ 에 WebSocket 으로 붙는다
-//   3) 카드를 대면 UID(대문자 hex, 예: 04CE1B53D12A81)를 읽어
-//   4) 디스플레이에 {"uid":"…"} 를 보낸다
-//   5) 디스플레이가 돌려주는 {"mode":"nfc","name":…,"points":…,"known":…,"note":…} 로 소리를 고른다
+//   1) 디스플레이로 가는 길을 연다 (아래 '두 갈래 길')
+//   2) 카드를 대면 UID(대문자 hex, 예: 04CE1B53D12A81)를 읽어
+//   3) 디스플레이에 {"uid":"…"} 를 보낸다
+//   4) 디스플레이가 돌려주는 {"mode":"nfc","name":…,"points":…,"known":…,"note":…} 로 소리를 고른다
+//
+// ── 디스플레이로 가는 두 갈래 길 ────────────────────────────────────
+//   1순위 **선(I2C)**    디스플레이 옆면 4핀 커넥터에 SDA·SCL·GND 세 가닥으로 문다(config.h 배선).
+//                        이 리더가 그 버스의 슬레이브(0x30)가 되어, 읽은 UID 를 칸에 적어 두면
+//                        디스플레이가 가져간다. 공유기도 mDNS 도 안 거치고, 라디오를 안 켜 시원하다.
+//   2순위 **와이파이**   선이 조용하면(케이블이 빠졌거나 디스플레이가 꺼졌다) 그제서야
+//                        와이파이를 켜고 mDNS 로 디스플레이를 찾아 ws://<IP>:81/ 에 붙는다.
+//
+//   두 길은 함께 살아 있을 수 있지만 **한 태깅은 언제나 한 길로만 나간다**(sendToDisplay).
+//   두 길로 같이 보내면 디스플레이가 같은 카드를 두 번 처리해 출석이 두 번 올라간다.
+//   반대로 답(ack)은 두 길로 겹쳐 와도 괜찮다 — 먼저 온 것만 쓰고 나머지는 버린다.
 //
 // 이름·잔액 조회와 출석 지급은 **디스플레이(nfcProject)가 한다** — 이 리더는 서버와 말하지 않는다.
 // 서버와 이야기하는 쪽을 하나로 모아야 한 태깅이 두 번 처리되지 않는다.
@@ -38,6 +48,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <Wire.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
@@ -75,7 +86,15 @@ static uint32_t nfcRetryAt    = 0;       // PN532 를 못 찾았을 때 다시 �
 static char     lastUid[24]   = "";
 static uint32_t lastUidAt     = 0;
 
-// ── 와이파이 (우선순위 3개) ─────────────────────────────────────────
+// ── 와이파이 (우선순위 3개) — 선이 죽었을 때 쓰는 예비 길 ───────────
+// wifiWanted 가 false 인 동안은 라디오를 아예 올리지 않는다. C3 발열의 가장 큰 몫이
+// 와이파이라, 선으로 다 되는 자리에서는 켤 이유가 없다(wifiGate 가 켤 때를 정한다).
+#if LINK_I2C_ENABLE
+static bool wifiWanted = false;          // 선이 조용해지면 wifiGate 가 켠다
+#else
+static bool wifiWanted = true;           // 선을 안 쓰는 설정 — 예전처럼 처음부터 와이파이
+#endif
+
 struct WifiAp { const char *ssid; const char *pass; };
 static const WifiAp WIFI_APS[] = {
   { WIFI_SSID_0, WIFI_PASS_0 },
@@ -100,18 +119,137 @@ static void wifiService() {
   Serial.printf("[와이파이] %d순위 '%s' 에 붙어 보는 중\n", wifiIdx + 1, WIFI_APS[wifiIdx].ssid);
 }
 
-// ── 디스플레이 WebSocket ────────────────────────────────────────────
+// ── 디스플레이의 답 (선·와이파이 공용) ──────────────────────────────
+// 보낸 태그의 답을 기다리는 중인가 — 디스플레이가 조회·출석 처리를 마치면
+// {"mode":"nfc",...} 를 돌려준다. 그 답으로 소리를 가른다(아래 ackService).
+static char     ackUid[24] = "";
+static uint32_t ackUntil   = 0;
+
+// 어느 길로 왔든 답을 푸는 곳은 여기 하나다. 두 길로 같은 답이 겹쳐 와도 탈이 없다 —
+// 먼저 온 것이 ackUid 를 비우므로 뒤에 온 것은 첫 줄에서 조용히 돌아간다.
+// JSON 으로 안 읽히는 것(잡음)은 그대로 버린다.
+//
+// 와이파이로 오는 답에는 "mode":"nfc" 가 붙어 있고, 선으로 오는 답은 I2C 한 덩이에
+// 들어가야 해서 그 칸을 뺀 짧은 꼴이다. 그래서 mode 를 보지 않고 **uid 가 맞는지**로
+// 가른다 — 대기 화면 알림({"mode":"idle",...})에는 uid 가 없어 어차피 걸러진다.
+static void handleDisplayReply(const char *text, size_t length) {
+  if (!ackUid[0]) return;                        // 기다리는 답이 없다
+  JsonDocument doc;
+  if (deserializeJson(doc, text, length)) return;
+  if (strcmp(doc["uid"] | "", ackUid))  return;  // 다른 카드의 답(또는 uid 가 없는 상태 알림)
+  const bool known = doc["known"] | false;
+  const char *note = doc["note"] | "";
+  Serial.printf("[결과] %s %s · %ld P%s%s\n", ackUid, (const char *)(doc["name"] | ""),
+                (long)(doc["points"] | 0L), note[0] ? " · " : "", note);
+  ackUid[0] = '\0';
+  if (known) sndOk(); else sndFail();            // 서버가 아는 키링이라야 '삑'
+}
+
+// 답이 오지 않으면(디스플레이가 서버에 못 물었거나 끊겼다) 기다림을 접고 실패음을 낸다.
+// 소리가 아예 없으면 자원봉사자는 리더가 못 읽은 줄 알고 카드를 계속 댄다.
+static void ackService() {
+  if (!ackUid[0]) return;
+  if ((int32_t)(millis() - ackUntil) < 0) return;
+  Serial.printf("[결과] %s — 디스플레이가 답하지 않음\n", ackUid);
+  ackUid[0] = '\0';
+  sndFail();
+}
+
+// ── 선 (I2C 슬레이브) — 1순위 길 ────────────────────────────────────
+// 오가는 글자는 WebSocket 때와 **똑같다**(JSON 한 덩이) — 규약이 하나라 푸는 곳도 하나다.
+//
+// 슬레이브는 먼저 말을 걸 수 없다. 그래서 보낼 것을 칸(linkOut)에 적어 두면 디스플레이가
+// 주기적으로 읽어 간다. 읽어 갈 때 오가는 한 덩이는 이렇게 생겼다 —
+//   [0]      보낼 글자의 길이 (0 = 줄 것 없음)
+//   [1..56]  글자
+// 마스터가 말을 걸어 준 것 자체가 '선이 살아 있다' 는 증거다(따로 ping 을 던지지 않는다).
+#if LINK_I2C_ENABLE
+#define LINK_OUT_SLOTS 4
+#define LINK_OUT_LEN   56
+#define LINK_REC_LEN   (1 + LINK_OUT_LEN)
+
+static volatile char     linkOut[LINK_OUT_SLOTS][LINK_OUT_LEN];
+static volatile uint8_t  linkOutHead = 0;   // loop 만 쓴다(넣는 쪽)
+static volatile uint8_t  linkOutTail = 0;   // 콜백만 쓴다(빼는 쪽)
+static char              linkIn[224];
+static volatile size_t   linkInLen    = 0;
+static volatile bool     linkInReady  = false;
+static volatile uint32_t linkAliveUntil = 0;
+static uint32_t          linkSilentSince = 0;   // 선이 조용해진 시각(와이파이를 언제 켤지 재는 자)
+
+static bool linkAlive() { return (int32_t)(millis() - linkAliveUntil) < 0; }
+
+// 마스터가 "줄 것 있나" 하고 읽어 갈 때 불린다.
+// **여기서 꾸물거리면 안 된다** — 이 버스에는 화면 확장칩과 터치도 함께 붙어 있어,
+// 늦게 놓아 주면 디스플레이가 그리다 멈춘다. 메모리 복사만 하고 바로 빠져나온다.
+static void onLinkRequest() {
+  uint8_t rec[LINK_REC_LEN] = {0};
+  if (linkOutTail != linkOutHead) {
+    const uint8_t slot = linkOutTail;
+    const size_t  n    = strnlen((const char *)linkOut[slot], LINK_OUT_LEN);
+    rec[0] = (uint8_t)n;
+    memcpy(rec + 1, (const void *)linkOut[slot], n);
+    linkOutTail = (uint8_t)((slot + 1) % LINK_OUT_SLOTS);
+  }
+  Wire.write(rec, sizeof(rec));
+  linkAliveUntil = millis() + LINK_ALIVE_MS;
+}
+
+// 마스터가 결과를 써 넣을 때. 여기서도 복사만 한다 — 푸는 것은 loop(linkService)에서.
+static void onLinkReceive(int n) {
+  (void)n;
+  size_t i = 0;
+  while (Wire.available() && i < sizeof(linkIn) - 1) linkIn[i++] = (char)Wire.read();
+  while (Wire.available()) Wire.read();          // 넘치는 것은 버린다
+  linkIn[i]      = '\0';
+  linkInLen      = i;
+  linkInReady    = i > 0;
+  linkAliveUntil = millis() + LINK_ALIVE_MS;
+}
+
+// 보낼 것을 칸에 넣는다(넣기만 한다 — 가져가는 것은 마스터다). 칸이 차면 false.
+static bool linkPush(const char *msg) {
+  const uint8_t next = (uint8_t)((linkOutHead + 1) % LINK_OUT_SLOTS);
+  if (next == linkOutTail) return false;
+  strncpy((char *)linkOut[linkOutHead], msg, LINK_OUT_LEN - 1);
+  linkOut[linkOutHead][LINK_OUT_LEN - 1] = '\0';
+  linkOutHead = next;
+  return true;
+}
+
+static void linkService() {
+  if (!linkInReady) return;
+  linkInReady = false;
+  Serial.printf("[선] %s\n", linkIn);
+  handleDisplayReply(linkIn, linkInLen);
+}
+
+// 와이파이를 언제 켤지 정한다. 선이 살아 있는 동안은 라디오를 올리지 않는다 —
+// 켜 두기만 해도 C3 가 눈에 띄게 뜨거워진다. 한 번 켠 와이파이는 다시 끄지 않는다:
+// 선이 오락가락할 때마다 껐다 켜면 붙는 데 걸리는 몇 초가 그대로 태깅 실패가 된다.
+static void wifiGate() {
+#if LINK_WIFI_FALLBACK
+  if (wifiWanted) return;
+  if (linkAlive()) { linkSilentSince = millis(); return; }
+  if (millis() - linkSilentSince < LINK_GRACE_MS) return;
+  wifiWanted = true;
+  Serial.println("[연결] 선이 조용하다 — 와이파이로 붙어 본다");
+#endif
+}
+#else
+static bool linkAlive()            { return false; }
+static void linkService()          {}
+static void wifiGate()             {}
+static bool linkPush(const char *) { return false; }
+#endif
+
+// ── 디스플레이 WebSocket — 2순위 길 ─────────────────────────────────
 WebSocketsClient ws;
 static bool      wsStarted   = false;    // ws.begin 을 불렀나(디스플레이 IP 를 찾았나)
 static bool      wsConnected = false;
 static IPAddress displayIp;
 static uint32_t  resolveAt   = 0;        // 다음 mDNS 조회 시각
 static uint32_t  downSince   = 0;        // 끊긴 채로 있던 시작 시각(0 = 붙어 있음). IP 가 바뀌었나 다시 확인하려고
-
-// 보낸 태그의 답을 기다리는 중인가 — 디스플레이가 조회·출석 처리를 마치면
-// {"mode":"nfc",...} 를 돌려준다. 그 답으로 소리를 가른다(아래 ackService).
-static char     ackUid[24] = "";
-static uint32_t ackUntil   = 0;
 
 static void wsEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
@@ -124,34 +262,13 @@ static void wsEvent(WStype_t type, uint8_t *payload, size_t length) {
       if (wsConnected) { Serial.println("[디스플레이] 끊김 — 다시 붙는다"); downSince = millis(); }
       wsConnected = false;
       break;
-    case WStype_TEXT: {
+    case WStype_TEXT:
       Serial.printf("[디스플레이] %.*s\n", (int)length, (const char *)payload);
-      if (!ackUid[0]) break;                       // 기다리는 답이 없다
-      JsonDocument doc;
-      if (deserializeJson(doc, (const char *)payload, length)) break;
-      if (strcmp(doc["mode"] | "", "nfc")) break;  // 대기 화면 상태 알림 — 우리 답이 아니다
-      if (strcmp(doc["uid"] | "", ackUid))  break; // 다른 카드의 답
-      const bool known = doc["known"] | false;
-      const char *note = doc["note"] | "";
-      Serial.printf("[결과] %s %s · %ld P%s%s\n", ackUid, (const char *)(doc["name"] | ""),
-                    (long)(doc["points"] | 0L), note[0] ? " · " : "", note);
-      ackUid[0] = '\0';
-      if (known) sndOk(); else sndFail();          // 서버가 아는 키링이라야 '삑'
+      handleDisplayReply((const char *)payload, length);
       break;
-    }
     default:
       break;
   }
-}
-
-// 답이 오지 않으면(디스플레이가 서버에 못 물었거나 끊겼다) 기다림을 접고 실패음을 낸다.
-// 소리가 아예 없으면 자원봉사자는 리더가 못 읽은 줄 알고 카드를 계속 댄다.
-static void ackService() {
-  if (!ackUid[0]) return;
-  if ((int32_t)(millis() - ackUntil) < 0) return;
-  Serial.printf("[결과] %s — 디스플레이가 답하지 않음\n", ackUid);
-  ackUid[0] = '\0';
-  sndFail();
 }
 
 // 디스플레이를 mDNS 로 찾는다. 세 가지를 차례로 시도한다 —
@@ -222,11 +339,19 @@ static void displayService() {
   downSince = millis();                              // 다음 재확인까지 또 기다린다(찾기를 계속 두드리지 않게)
 }
 
-// 보냈으면 true.
+// 보냈으면 true. **한 길로만 보낸다** — 선이 살아 있으면 선으로, 아니면 WebSocket 으로.
+// 두 길로 같이 보내면 디스플레이가 같은 UID 를 두 번 받아 출석이 두 번 올라간다.
 static bool sendToDisplay(const char *msg) {
-  if (!wsConnected) { Serial.printf("[디스플레이] 안 붙어 있어 못 보냄: %s\n", msg); return false; }
+#if LINK_I2C_ENABLE
+  // 칸에 적어 두면 디스플레이가 LINK_POLL_MS 안에 가져간다(슬레이브는 먼저 못 건다).
+  if (linkAlive()) {
+    if (linkPush(msg)) { Serial.printf("[보냄·선] %s\n", msg); return true; }
+    Serial.printf("[선] 보낼 칸이 찼다 — 와이파이로 돌린다: %s\n", msg);
+  }
+#endif
+  if (!wsConnected) { Serial.printf("[디스플레이] 선도 와이파이도 없어 못 보냄: %s\n", msg); return false; }
   ws.sendTXT(msg);
-  Serial.printf("[보냄] %s\n", msg);
+  Serial.printf("[보냄·와이파이] %s\n", msg);
   return true;
 }
 
@@ -418,8 +543,12 @@ static void handleLine(char *s) {
   } else if (!strcmp(s, "raw")) {
     rawProbe();
   } else if (!strcmp(s, "status")) {
-    Serial.printf("[상태] 와이파이 %s · 디스플레이 %s · PN532 %s\n",
-                  online ? WiFi.localIP().toString().c_str() : "끊김",
+    Serial.printf("[상태] 보내는 길 %s\n",
+                  linkAlive() ? "선(UART)" : (wsConnected ? "와이파이(WebSocket)" : "없음 — 못 보낸다"));
+    Serial.printf("[상태] 선 %s · 와이파이 %s · 디스플레이 %s · PN532 %s\n",
+                  LINK_I2C_ENABLE ? (linkAlive() ? "살아 있음" : "조용함") : "꺼 둠",
+                  !wifiWanted ? "안 켬(선이 있어 필요 없다)"
+                              : (online ? WiFi.localIP().toString().c_str() : "끊김"),
                   wsConnected ? displayIp.toString().c_str() : "안 붙음",
                   nfcReady ? "준비됨" : "없음");
     Serial.printf("[상태] CPU %uMHz · 폴링 %lums · 재시도 0x%02X · 모뎀슬립 %s\n",
@@ -454,30 +583,49 @@ void setup() {
   spiStart();
   nfcBegin();
 
+#if LINK_I2C_ENABLE
+  // 선을 먼저 연다 — 디스플레이가 말을 걸어 오면 와이파이는 끝내 켜지 않는다(wifiGate).
+  // setBufferSize 는 begin 보다 먼저 — 기본 128 바이트로는 결과 한 덩이가 잘릴 수 있다.
+  Wire.setBufferSize(256);
+  Wire.onRequest(onLinkRequest);
+  Wire.onReceive(onLinkReceive);
+  if (Wire.begin((uint8_t)LINK_I2C_ADDR, PIN_LINK_SDA, PIN_LINK_SCL, LINK_I2C_HZ))
+    Serial.printf("[선] I2C 슬레이브 0x%02X · SDA=GPIO%d SCL=GPIO%d — 디스플레이를 기다린다\n",
+                  LINK_I2C_ADDR, PIN_LINK_SDA, PIN_LINK_SCL);
+  else
+    Serial.println("[선] I2C 슬레이브를 못 열었다 — 와이파이로만 간다");
+  linkSilentSince = millis();
+#endif
+
   WiFi.mode(WIFI_STA);
   // 모뎀 슬립 — C3 발열의 가장 큰 몫이다. 재우면 라디오가 DTIM 사이에 꺼져
   // 평균 전류가 크게 준다. 대신 디스플레이로 가는 왕복에 수십~수백 ms 가 붙는데,
   // ACK_WAIT_MS(4초) 안이라 소리 판정에는 지장이 없다.
   WiFi.setSleep(WIFI_MODEM_SLEEP ? true : false);
-  wifiService();
+  if (wifiWanted) wifiService();      // 선을 쓰는 설정이면 여기서는 아직 켜지 않는다
 }
 
 void loop() {
-  wifiService();
-  const bool now = WiFi.status() == WL_CONNECTED;
-  if (now != online) {
-    online = now;
-    if (online) {
-      Serial.printf("[와이파이] 연결됨 %s (%s)\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
-      MDNS.begin("nfc-client");
-      resolveAt = millis();
-    } else {
-      Serial.println("[와이파이] 끊김");
+  linkService();                 // 1순위 길 — 들어온 답을 처리하고 살아 있는지 물어본다
+  wifiGate();                    // 선이 오래 조용하면 그제서야 와이파이를 켠다
+
+  if (wifiWanted) {              // 2순위 길 — 선으로 다 되는 자리에서는 여기가 통째로 안 돈다
+    wifiService();
+    const bool now = WiFi.status() == WL_CONNECTED;
+    if (now != online) {
+      online = now;
+      if (online) {
+        Serial.printf("[와이파이] 연결됨 %s (%s)\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+        MDNS.begin("nfc-client");
+        resolveAt = millis();
+      } else {
+        Serial.println("[와이파이] 끊김");
+      }
     }
+    displayService();
+    if (wsStarted) ws.loop();
   }
 
-  displayService();
-  if (wsStarted) ws.loop();
   ackService();                  // 디스플레이 답이 늦으면 기다림을 접고 실패음
   nfcService();
   serialService();

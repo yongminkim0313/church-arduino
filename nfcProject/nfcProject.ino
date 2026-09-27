@@ -3,7 +3,7 @@
 // 보드: LILYGO T-RGB 2.1" 원형 (ESP32-S3 · ST7701S RGB 480×480 · CST820 터치)
 // 이 보드는 화면만 담당한다 —
 //   1) config.h 의 와이파이에 붙는다
-//   2) nfc-display.local 로 자기 이름을 알린다(mDNS)
+//   2) nfc-display.local 로 자기 이름을 알린다(mDNS)/Users/kimyongmin/workspace/arduino/nfcProject/config.h
 //   3) 포트 81 에 WebSocket 서버를 연다
 //   4) 외부(NFC 시스템)가 붙어 명령을 보내면 그에 맞춰 화면을 바꾼다
 //
@@ -42,6 +42,16 @@
 //   2) RGB 패널        ESP32 가 16개 데이터선으로 픽셀을 계속 흘려보낸다(PSRAM 프레임버퍼)
 //   3) 초기화 표       ST7701S 에 "이런 화면이다" 를 알려 준다(2.1인치는 type4)
 //   4) 백라이트        GPIO46 을 켜야 보인다. 밝기는 '흔든 횟수' 로 정한다(BL_LEVEL)
+//
+// ── 리더는 두 갈래로 온다 (선 · 와이파이) ───────────────────────────
+//   선(I2C)    리더(ESP32-C3)를 옆면 4핀 커넥터에 SDA·SCL·GND 로 문다(config.h 배선).
+//              리더가 이 버스의 슬레이브(0x30)라 먼저 말을 못 건다 — 이쪽이 LINK_POLL_MS
+//              마다 "줄 것 있나" 하고 읽어 온다(linkService). 결과는 이쪽이 써 넣는다.
+//              공유기·mDNS 를 안 거쳐 즉시 닿고, 망이 죽어도 태깅이 된다. 리더는 이 길을 먼저 쓴다.
+//   WebSocket  선이 없거나 조용하면 리더가 와이파이로 넘어와 붙는다. 브라우저·폰도 여기로 붙는다.
+//   두 길에 흐르는 **글자는 똑같다**(아래 규약) — 받는 곳도 handleCommand 하나다.
+//   다만 선으로 되돌려 주는 답은 I2C 한 덩이에 들어가야 해서 mode·online 을 뺀 짧은
+//   꼴이다(linkSendResult). 리더는 uid 로 자기 답인지 가리므로 그래도 알아본다.
 //
 // ── WebSocket 규약 (ws://nfc-display.local:81/) ─────────────────────
 //   보내는 쪽 → 보드
@@ -249,6 +259,25 @@ struct AttendSeen { char uid[24]; uint32_t at; };
 static AttendSeen attendSeen[ATTEND_RECENT_MAX];
 static int        attendSeenCount = 0;
 
+// ── 리더와 잇는 선 (I2C 마스터) ─────────────────────────────────────
+// WebSocket 서버는 그대로 열어 둔다 — 브라우저·폰은 계속 ws 로 붙는다. 리더만 선으로 온다.
+// 선과 ws 로 오는 글자는 **똑같다**(JSON 한 덩이). 그래서 푸는 곳도 handleCommand 하나다.
+// 리더는 슬레이브라 먼저 말을 못 건다 — 이쪽이 LINK_POLL_MS 마다 읽어 가고(linkService),
+// 결과는 이쪽이 써 넣는다(linkSend). 이 버스는 터치·확장칩과 함께 쓴다(Wire 하나).
+#if LINK_I2C_ENABLE
+static uint32_t linkAliveUntil = 0;      // 이 시각까지는 리더가 선 너머에 살아 있다고 본다
+static bool linkAlive() { return (int32_t)(millis() - linkAliveUntil) < 0; }
+
+static void linkSend(const char *msg) {
+  Wire.beginTransmission((uint8_t)LINK_I2C_ADDR);
+  Wire.write((const uint8_t *)msg, strlen(msg));
+  if (Wire.endTransmission() == 0) linkAliveUntil = millis() + LINK_ALIVE_MS;
+}
+#else
+static bool linkAlive()            { return false; }
+static void linkSend(const char *) {}
+#endif
+
 static bool online    = false;   // 화면에 그려 둔 연결 상태(아이콘이 떠 있나)
 static bool wasDown   = false;   // 직전에 손가락이 닿아 있었나(누르는 순간을 가려내려고)
 static bool serversUp = false;   // mDNS·WebSocket 을 켰나(와이파이가 붙은 뒤 한 번만)
@@ -340,9 +369,12 @@ static void drawStatus(const char *msg) {
 // (enum LinkState 는 맨 위 '점' 설정 옆에 있다 — 함수 원형보다 앞이라야 한다)
 static LinkState shownLink = (LinkState)-1;   // 화면에 그려 둔 점 색(바뀔 때만 다시 그린다)
 
-// 지금 client 연결 상태. 와이파이 없음 → 실패, 붙은 client 있음 → 정상, 그 외 → 대기.
+// 지금 client 연결 상태. 붙은 client 있음 → 정상, 와이파이도 선도 없음 → 실패, 그 외 → 대기.
+// 선으로 온 리더도 '붙은 client' 로 친다 — 와이파이가 죽어도 선만 살아 있으면 태깅은 된다.
+// (그래서 선이 살아 있을 때는 와이파이가 없어도 빨강이 아니라 초록이다)
 static LinkState linkState() {
-  if (!online)                            return LINK_FAIL;
+  if (linkAlive())                                   return LINK_OK;
+  if (!online)                                       return LINK_FAIL;
   if (serversUp && webSocket.connectedClients() > 0) return LINK_OK;
   return LINK_WAIT;
 }
@@ -435,19 +467,38 @@ static void drawNfc(const uint16_t *photo, const char *name, long points, const 
 // 지금 상태를 붙어 있는 모두(또는 한 client)에게 알린다.
 // NFC 화면일 때는 조회 결과까지 함께 보낸다 — 리더(nfcProjectClient)는 서버와 말하지 않으므로
 // 자기가 읽은 카드가 어떻게 됐는지 알 길이 이 응답뿐이다(소리를 그것으로 가른다).
-static void sendState(int8_t only = -1) {
-  char msg[288];
+static void buildState(char *msg, size_t cap) {
   if (mode == MODE_NFC)
-    snprintf(msg, sizeof(msg),
+    snprintf(msg, cap,
              "{\"mode\":\"nfc\",\"uid\":\"%s\",\"name\":\"%s\",\"points\":%ld,"
              "\"known\":%s,\"note\":\"%s\",\"online\":%s}",
              nfcUid, nfcName, nfcPoints, nfcKnown ? "true" : "false", nfcNote,
              online ? "true" : "false");
   else
-    snprintf(msg, sizeof(msg), "{\"mode\":\"idle\",\"photo\":\"%s\",\"index\":%d,\"count\":%d,\"online\":%s}",
+    snprintf(msg, cap, "{\"mode\":\"idle\",\"photo\":\"%s\",\"index\":%d,\"count\":%d,\"online\":%s}",
              photoLabel(photoIdx), photoIdx, sdPhotoCount, online ? "true" : "false");
-  if (only < 0) webSocket.broadcastTXT(msg);
-  else          webSocket.sendTXT((uint8_t)only, msg);
+}
+
+// 선으로는 **NFC 결과만** 보낸다. 리더가 쓰는 것은 그것뿐이고(소리를 가른다), 대기 화면
+// 알림은 리더에게 아무 쓸모가 없다. 그리고 I2C 한 덩이에 들어가야 해서 mode·online 처럼
+// 안 쓰는 칸을 뺀 짧은 꼴로 만든다 — 칸마다 길이를 잘라 두어 버퍼를 넘지 않게 한다
+// (넘쳐서 잘리면 JSON 이 깨져 리더가 답을 못 알아본다).
+static void linkSendResult() {
+  if (mode != MODE_NFC) return;
+  char msg[192];
+  snprintf(msg, sizeof(msg),
+           "{\"uid\":\"%.24s\",\"name\":\"%.40s\",\"points\":%ld,\"known\":%s,\"note\":\"%.32s\"}",
+           nfcUid, nfcName, nfcPoints, nfcKnown ? "true" : "false", nfcNote);
+  linkSend(msg);
+}
+
+// only < 0 이면 모두에게(ws 로 붙은 모두 + 선), only >= 0 이면 그 ws client 한 곳에만.
+static void sendState(int8_t only = -1) {
+  char msg[288];
+  buildState(msg, sizeof(msg));
+  if (only >= 0) { webSocket.sendTXT((uint8_t)only, msg); return; }
+  webSocket.broadcastTXT(msg);
+  linkSendResult();
 }
 
 // 대기 화면으로 (다시) 들어간다.
@@ -794,6 +845,29 @@ static bool attendEarn(const char *uid, char *name, size_t nameCap, long *points
   return true;
 }
 
+// ── 미등록 카드 알리기 ──────────────────────────────────────────────
+// POST /api/talent/seen { uid, device } → 관리자 화면의 '미등록카드' 에 뜨게 한다.
+// 서버에 없는 키링을 만나면 부른다 — 이걸 부르지 않으면 화면에 "등록되지 않은 키링"만
+// 뜰 뿐 서버에는 아무 기록이 남지 않아, 관리자가 등록할 대상 자체가 생기지 않는다.
+// (v1.0 리더 TalentNfcReader 의 reportSeen 과 같은 일. v2.0 은 서버와 말하는 쪽이
+//  디스플레이 하나라 여기서 부른다.) 서버가 이미 아는 UID 는 걸러 기록하지 않는다.
+static void reportSeen(const char *uid) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  char url[160];
+  snprintf(url, sizeof(url), "%s/api/talent/seen", TALENT_SERVER);
+
+  char payload[128];
+  snprintf(payload, sizeof(payload), "{\"uid\":\"%s\",\"device\":\"%s\"}", uid, TALENT_DEVICE_ID);
+
+  HTTPClient http; WiFiClientSecure scli; WiFiClient cli;
+  beginHttp(http, scli, cli, url);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(6000);
+  const int code = http.POST((uint8_t *)payload, strlen(payload));
+  http.end();
+  Serial.printf("[미등록] %s 알림 (code=%d)\n", uid, code);
+}
+
 // 이 키링이 방금 출석했나 — ATTEND_COOLDOWN_MS 안이면 true(다시 주지 않는다).
 static bool attendedRecently(const char *uid) {
   const uint32_t nowMs = millis();
@@ -851,6 +925,7 @@ static void processTag(const char *uid) {
   }
 
   if (lookupTalent(uid, name, sizeof(name), &points, &known)) {
+    if (!known) reportSeen(uid);   // 서버에 없는 키링 — '미등록카드' 에 뜨게 알린다
     showNfc(uid, name, points, known, known ? "" : "등록되지 않은 키링");
   } else {
     showNfc(uid, "", 0, false, "서버에 물어보지 못했어요");
@@ -909,6 +984,42 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t 
       break;                                 // BIN·PING 등은 쓰지 않는다
   }
 }
+
+// ── 선(I2C)으로 리더에게 물어보기 ───────────────────────────────────
+// 슬레이브는 먼저 말을 걸 수 없으니 이쪽이 주기적으로 "줄 것 있나" 하고 읽어 온다.
+// 한 덩이는 [0]=글자 길이(0 = 줄 것 없음) · [1..]=글자 다. 리더가 답을 했다는 것
+// 자체가 살아 있다는 증거라, 따로 ping 을 주고받지 않는다.
+//
+// 리더가 버스에 없으면 requestFrom 이 빈손으로 돌아온다 — 조용히 넘긴다(50ms 마다
+// 주소를 한 번 두드리는 것뿐이라 터치·화면이 쓰는 같은 버스에 부담이 없다).
+#if LINK_I2C_ENABLE
+#define LINK_OUT_LEN 56
+#define LINK_REC_LEN (1 + LINK_OUT_LEN)
+static uint32_t linkPollAt = 0;
+
+static void linkService() {
+  if ((int32_t)(millis() - linkPollAt) < 0) return;
+  linkPollAt = millis() + LINK_POLL_MS;
+
+  if (Wire.requestFrom((uint8_t)LINK_I2C_ADDR, (size_t)LINK_REC_LEN) != LINK_REC_LEN) {
+    while (Wire.available()) Wire.read();          // 리더가 없다(또는 덜 왔다) — 치우고 나간다
+    return;
+  }
+  uint8_t rec[LINK_REC_LEN];
+  for (size_t i = 0; i < LINK_REC_LEN; i++) rec[i] = (uint8_t)Wire.read();
+  linkAliveUntil = millis() + LINK_ALIVE_MS;       // 답을 했다 = 리더가 선 너머에 살아 있다
+
+  const uint8_t n = rec[0];
+  if (!n || n > LINK_OUT_LEN) return;              // 줄 것이 없다(또는 길이가 엉뚱하다)
+  char line[LINK_OUT_LEN + 1];
+  memcpy(line, rec + 1, n);
+  line[n] = '\0';
+  Serial.printf("[선] 받음: %s\n", line);
+  handleCommand(line, n);
+}
+#else
+static void linkService() {}
+#endif
 
 // ── 와이파이 (우선순위 3개, config.h) ───────────────────────────────
 // 0→1→2 순서로 붙어 본다. 한 곳에 WIFI_TRY_MS 만큼 붙어 보고 안 되면 다음 순위로,
@@ -986,6 +1097,12 @@ void setup() {
   Serial.println("\n=== nfcProject — WebSocket 디스플레이 ===");
 
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
+#if LINK_I2C_ENABLE
+  // 리더는 이 버스(터치·확장칩과 같은 버스)에 슬레이브로 붙는다. 결과 한 덩이가
+  // 기본 128 바이트를 넘길 수 있어 버퍼를 늘려 둔다 — 잘리면 JSON 이 깨진다.
+  Wire.setBufferSize(256);
+  Serial.printf("[선] I2C 마스터 — 리더 0x%02X 를 %dms 마다 물어본다\n", LINK_I2C_ADDR, LINK_POLL_MS);
+#endif
 
   // 1~3) 확장칩 → RGB 패널 → 초기화 표. begin() 한 번이 다 한다.
   if (!gfx->begin()) {
@@ -1018,6 +1135,8 @@ void setup() {
 }
 
 void loop() {
+  linkService();                 // 선으로 온 명령 먼저 — 공유기를 안 거쳐 가장 빠르다
+
   // 와이파이 — 붙거나 끊기는 순간에만 다시 그린다(매번 그리면 화면이 계속 쓸린다)
   wifiService();
   const bool nowOnline = (WiFi.status() == WL_CONNECTED);
@@ -1069,6 +1188,10 @@ void loop() {
                       TALENT_DEVICE_ID, cfgBacklight, cfgAttendMode ? "켜짐" : "꺼짐",
                       cfgAttendCard[0] ? cfgAttendCard : "없음",
                       cfgGotOnce ? "받음" : "못 받음(기본값으로 동작)");
+        Serial.printf("[상태] 선 %s · ws client %u곳 · 와이파이 %s\n",
+                      LINK_I2C_ENABLE ? (linkAlive() ? "리더가 살아 있음" : "조용함") : "꺼 둠",
+                      serversUp ? webSocket.connectedClients() : 0,
+                      online ? WiFi.localIP().toString().c_str() : "끊김");
         break;
       case 'r': case 'R': Serial.println("[명령] 재부팅합니다..."); Serial.flush(); ESP.restart(); break;
       case '?':           Serial.println("[명령] n 다음 · p 이전 · h 활성 · s 사진 목록 · l SD 목록 · c 설정 받기 · i 상태 · r 재부팅"); break;
