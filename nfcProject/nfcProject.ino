@@ -28,6 +28,18 @@
 //   같은 키링이 ATTEND_COOLDOWN_MS 안에 또 오면 "이미 출석했어요" 만 띄우고 주지 않는다
 //   (기기에 시계가 없어 "하루 한 번" 을 알 수 없다 — 시간 간격으로 막는다).
 //
+// ── 화면이 밀릴 때 (가끔 그림이 한쪽으로 쓸리는 것) ─────────────────
+//   RGB 패널은 PSRAM 의 그림을 쉬지 않고 읽어 내보낸다. 그 읽기가 한 번이라도 늦으면
+//   그 줄부터 그림이 밀린다(다음 VSYNC 에 제자리로 돌아온다 — 그래서 가끔만 보인다).
+//   늦어지는 까닭은 둘이다. 1) 플래시에 쓰는 동안 캐시가 꺼져 갱신 인터럽트가 못 돈다
+//   → WiFi.persistent(false) 로 와이파이가 NVS 에 쓰지 않게 막았다.
+//   2) PSRAM 을 크게 주무르는 일이 겹친다 → 중계 버퍼를 스무 줄로 늘리고,
+//      화면 한 장을 옮기는 동안에는 고리(아래)를 쉬게 했다.
+//
+// ── 불러오는 중 표시 ────────────────────────────────────────────────
+//   서버에 무엇을 물을 때(조회·출석·설정·사진) 화면 테두리를 금색 고리가 돈다.
+//   따로 띄운 일꾼이 그린다 — 서버 왕복이 loop 를 붙잡고 있는 동안에도 돌아간다.
+//
 // ── 사진 동기화 (화면 길게 누르기) ──────────────────────────────────
 //   화면을 LONG_PRESS_MS 이상 누르면 펀펀포인트 서버(config.h 의 TALENT_SERVER)에서
 //   이름표(GET /api/talent/roster?px=480)를 받아, 사진이 있는 UID 마다 480 원형 사진
@@ -73,13 +85,16 @@
 //   Partition Scheme: Huge APP (3MB No OTA/1MB SPIFFS)  ← 그림과 한글 폰트가 플래시에 들어간다
 //   USB CDC On Boot: Enabled
 //   라이브러리: GFX Library for Arduino · ArduinoJson · WebSockets(by Markus Sattler)
-//   한글: GFX 라이브러리에 딸린 u8g2_font_quan7_h_cjk 폰트를 쓴다(한글 전체 포함).
+//   한글: U8g2 에 딸린 굴림 16px(u8g2_font_gulim16_t_korean2)으로 그린다 — 늘려도 획이 산다.
+//        굴림에 없는 드문 글자(KS X 1001 밖)가 섞인 줄만 GFX 의 u8g2_font_quan7_h_cjk(한글 전체)로 그린다.
 //
 //   ※ LilyGo-T-RGB 라이브러리(LV_Helper.h·LilyGo_RGBPanel.h)는 넣지 말 것 — lvgl/SensorLib
 //     버전 충돌로 빌드가 깨진다. 이 스케치는 Arduino_GFX 로 직접 그린다(v1.0 과 같은 이유).
 //
 // ── 시리얼 명령 (115200) ────────────────────────────────────────────
 //   n 다음 사진 · p 이전 사진 · h 활성 화면으로 · s 사진 목록 · l SD 파일 목록 · r 재부팅 · ? 도움말
+//   t 시험 NFC 화면(카드·서버 없이 이름·포인트를 띄워 글자를 본다 — 누를 때마다 다음 보기)
+//   g 불러오는 중 고리를 3초 돌려 본다(서버 없이 확인용)
 //
 // ── 그림 바꾸기 ─────────────────────────────────────────────────────
 // 그림 헤더는 tools/img2rgb565_dither.py 로 만든다(v1.0 머리말 참고). 자기 그림으로 바꾸려면
@@ -94,7 +109,7 @@
 #include <HTTPClient.h>          // 서버에서 사진 내려받기(길게 누르기)
 #include <WiFiClientSecure.h>    // https 다운로드
 #include <SD_MMC.h>             // microSD (SDMMC 1-bit) 저장
-#include <U8g2lib.h>             // 이게 있어야 Arduino_GFX 가 한글 u8g2 폰트(quan7)·UTF8 출력을 켠다
+#include <U8g2lib.h>             // 한글 u8g2 폰트(굴림·quan7)·UTF8 출력을 켜고, 굴림 폰트도 여기서 온다
 #include <Arduino_GFX_Library.h>
 #include "config.h"              // WIFI_SSID · WIFI_PASSWORD · MDNS_HOSTNAME · WS_PORT
 #include "useEnable.h"           // USEENABLE[480×480]  — 사용 활성(대기 화면의 첫 장)
@@ -132,7 +147,7 @@ enum LinkState { LINK_FAIL, LINK_WAIT, LINK_OK };
 // PWM 이 아니다. 핀을 짧게 흔든 횟수로 16단계 중 하나를 고른다(LILYGO 보드 방식).
 // 이 값은 **서버에 못 붙었을 때 쓰는 기본값**이다 — 붙으면 관리자 화면(리더 설정 → v2.0)의
 // 밝기가 이깁니다. 서버 스키마(yvServer/talent/talentConfigV2.js)의 기본값과 같게 둘 것.
-#define BL_LEVEL 4               // ← 1(가장 어둡다) … 16(가장 밝다)
+#define BL_LEVEL 16              // ← 1(가장 어둡다) … 16(가장 밝다)
 
 static void backlightOn(uint8_t level) {
   if (level < 1)  level = 1;
@@ -152,7 +167,8 @@ Arduino_XL9535SWSPI *bus = new Arduino_XL9535SWSPI(
 
 // 픽셀 클럭 8MHz · 중계 버퍼 열 줄 — 화면이 자글거리는 것을 막는다(v1.0 PanelTFT 와 같다).
 static const int32_t PCLK_HZ      = 8000000L;
-static const int     BOUNCE_LINES = 10;
+static const int     BOUNCE_LINES = 20;   // 열 줄 → 스무 줄. 인터럽트가 늦어도 버틸 여유를 늘린다
+                                          // (내장 RAM 을 20KB 쯤 더 쓴다 — 지금 270KB 가 논다)
 
 Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
     45 /* DE */, 41 /* VSYNC */, 47 /* HSYNC */, 42 /* PCLK */,
@@ -224,8 +240,18 @@ static const uint16_t *loadPhotoForUid(const char *uid) {
 // ── 화면 색·글자 (NFC 오버레이) ─────────────────────────────────────
 #define COL_WHITE 0xFFFF
 #define COL_GOLD  0xFEA0         // 잔여 포인트 숫자 색
-#define BAND_TOP_H 96            // 상단 이름 띠 높이
-#define BAND_BOT_Y 372           // 하단 포인트 띠 시작 y
+#define COL_EDGE  0x0000         // 글자 뒤에 두르는 테두리색(검정)
+#define BAND_TOP_H 108           // 상단 이름 띠 높이
+#define BAND_BOT_Y 356           // 하단 포인트 띠 시작 y
+#define BAND_KEEP  90            // 띠에 남길 사진 비중(작을수록 어둡다 — 글자가 더 도드라진다)
+
+// 글자 크기는 '높이 몇 픽셀' 로 적는다 — 폰트 원래 크기의 정수배로만 늘려 획이 흐트러지지 않는다.
+#define PX_NAME   48             // NFC 상단 이름
+#define PX_LABEL  32             // NFC 하단 라벨(또는 '출석 완료' 안내)
+#define PX_POINTS 48             // NFC 하단 잔여 포인트 숫자
+#define PX_STATUS 32             // 동기화 등 안내 문구
+#define TEXT_EDGE   3            // 글자 뒤 테두리 두께(픽셀) — 큰 글자일수록 이만큼까지 두껍게
+#define TEXT_MARGIN 14           // 원형 화면 테두리에서 띄울 여백
 static const uint32_t NFC_SHOW_MS = 6000;   // NFC 화면을 몇 ms 보여 준 뒤 대기 화면으로 돌아갈지
 
 // ── 상태 ────────────────────────────────────────────────────────────
@@ -342,28 +368,205 @@ static void darkenBand(int y0, int y1, uint8_t keep /*앞(사진)색 비중*/) {
       frame[y * 480 + x] = blend565(frame[y * 480 + x], 0x0000, keep);
 }
 
-// 글자를 (가운데 x = cx) 에 세로 중앙(cy)으로 놓고 그린다. u8g2 한글 폰트 기준.
-static void drawCenteredUTF8(const char *s, int cx, int cy, uint8_t size, uint16_t color) {
-  gfx->setFont(u8g2_font_quan7_h_cjk);
-  gfx->setUTF8Print(true);
-  gfx->setTextSize(size);
+// ── 글자체 ──────────────────────────────────────────────────────────
+// 글자는 굴림 16px(u8g2_font_gulim16_t_korean2)로 그린다. 한 글자가 16픽셀 칸이라
+// 2배·3배로 늘려도 자모가 또박또박 남는다 — 8픽셀 폰트(quan7)를 4배로 늘리면
+// 획이 뭉개져 두 발짝 떨어지면 이름을 못 읽는다.
+// 다만 굴림 쪽은 KS X 1001 의 2350 자만 들어 있다(흔한 이름·문구는 다 되지만 '똠·뷁' 류가 없다).
+// 그런 글자가 한 자라도 섞이면 그 줄만 한글이 전부 든 quan7 로 되돌려 그린다 —
+// 글자가 없으면 u8g2 는 그 자리를 그냥 비우고 지나가, 아이 이름이 통째로 사라진다.
+#define FONT_MAIN    u8g2_font_gulim16_t_korean2
+#define FONT_MAIN_PX 16          // 굴림 한 글자의 원래 높이
+#define FONT_ALL     u8g2_font_quan7_h_cjk
+#define FONT_ALL_PX  8           // quan7 한 글자의 원래 높이
+
+// UTF-8 한 글자를 유니코드 번호로 꺼내고, 다음 글자 자리를 돌려준다.
+static const char *utf8Next(const char *s, uint16_t *cp) {
+  const uint8_t c = (uint8_t)*s++;
+  uint16_t v; int more;
+  if      (c < 0x80) { *cp = c; return s; }
+  else if (c < 0xE0) { v = c & 0x1F; more = 1; }
+  else if (c < 0xF0) { v = c & 0x0F; more = 2; }
+  else               { v = c & 0x07; more = 3; }
+  while (more-- && ((uint8_t)*s & 0xC0) == 0x80) v = (v << 6) | ((uint8_t)*s++ & 0x3F);
+  *cp = v;
+  return s;
+}
+
+// u8g2 폰트 표에 이 글자가 있나 — Arduino_GFX 가 글자를 찾는 길을 그대로 따라간다
+// (머리 23바이트 뒤로 1바이트짜리 글자들이 늘어서고, 그 뒤에 유니코드 묶음별 찾기표가 있다).
+static uint16_t fontWord(const uint8_t *f, uint8_t off) { return ((uint16_t)f[off] << 8) | f[off + 1]; }
+
+static bool fontHasGlyph(const uint8_t *font, uint16_t cp) {
+  const uint8_t *p = font + 23;
+  if (cp <= 255) {
+    for (;;) {
+      if (p[1] == 0)  return false;
+      if (p[0] == cp) return true;
+      p += p[1];
+    }
+  }
+  const uint8_t *table = font + 23 + fontWord(font, 21);   // 유니코드 찾기표(4바이트짜리 칸)
+  p = table;
+  uint16_t last;
+  do {
+    p += fontWord(table, 0);                               // 이 묶음 글자들이 시작하는 자리
+    last = fontWord(table, 2);                             // 이 묶음의 마지막 글자
+    table += 4;
+  } while (last < cp);
+  for (;;) {
+    const uint16_t e = fontWord(p, 0);
+    if (e == 0 || e > cp) return false;   // 글자는 번호순으로 늘어서 있다 — 지나쳤으면 없는 글자다
+    if (e == cp)          return true;
+    p += p[2];
+  }
+}
+
+// 이 줄을 굴림으로 다 그릴 수 있나(한 자라도 없으면 quan7 로 간다).
+static bool mainFontCovers(const char *s) {
+  uint16_t cp;
+  while (*s) {
+    s = utf8Next(s, &cp);
+    if (!fontHasGlyph((const uint8_t *)FONT_MAIN, cp)) return false;
+  }
+  return true;
+}
+
+// 원형 화면에서 y0..y1 줄에 글자를 놓을 수 있는 가로폭(가장 좁은 줄 기준, 양옆 여백 뺀 값).
+// 네모난 화면이면 480 을 그대로 쓰면 되지만, 이 화면은 지름 480 원이라 위아래로 갈수록 좁다.
+static int roundWidthAt(int y0, int y1) {
+  int dy = abs(y0 - 240); const int dy1 = abs(y1 - 240);
+  if (dy1 > dy) dy = dy1;
+  if (dy >= 240) return 0;
+  const int half = (int)sqrtf((float)(240 * 240 - dy * dy));
+  const int w = 2 * half - 2 * TEXT_MARGIN;
+  return w > 0 ? w : 0;
+}
+
+// 글자 한 줄을 지금 폰트·크기로 (x, y) 에 찍는다(테두리·굵게 칠을 여러 번 겹치려고 떼 놓았다).
+static void printAt(const char *s, int x, int y, uint16_t color) {
   gfx->setTextColor(color);
-  int16_t x1, y1; uint16_t w, h;
-  gfx->getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-  gfx->setCursor(cx - w / 2 - x1, cy - h / 2 - y1);
+  gfx->setCursor(x, y);
   gfx->print(s);
+}
+
+// 글자 한 줄을 (가운데 x = cx) 에 세로 중앙(cy)으로 놓고 그린다.
+//   px : 바라는 글자 높이. 원 안에 안 들어가면 폰트 배수를 한 단계씩 줄인다(긴 이름도 안 잘린다).
+// 뒤에 검은 테두리를 두르고 획을 1픽셀 굵게 겹쳐 찍는다 — 사진 위에서도 글자만 떠 보인다.
+static void drawCenteredUTF8(const char *s, int cx, int cy, int px, uint16_t color) {
+  const bool useMain = mainFontCovers(s);
+  const int unit = useMain ? FONT_MAIN_PX : FONT_ALL_PX;
+  gfx->setFont(useMain ? (const uint8_t *)FONT_MAIN : (const uint8_t *)FONT_ALL);
+  gfx->setUTF8Print(true);
+
+  int scale = px / unit; if (scale < 1) scale = 1;
+  int16_t x1, y1; uint16_t w, h;
+  for (;;) {
+    gfx->setTextSize(scale);
+    gfx->getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+    if (scale <= 1) break;
+    if ((int)w + 2 * TEXT_EDGE <= roundWidthAt(cy - h / 2, cy + h / 2)) break;
+    scale--;
+  }
+
+  const int bx = cx - w / 2 - x1, by = cy - h / 2 - y1;
+  int edge = scale < 2 ? 2 : scale;                                  // 작은 글자엔 얇게, 큰 글자엔 두껍게
+  if (edge > TEXT_EDGE) edge = TEXT_EDGE;
+  static const int8_t ox[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+  static const int8_t oy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+  for (int i = 0; i < 8; i++)                                        // 여덟 방향 검은 테두리
+    printAt(s, bx + ox[i] * edge, by + oy[i] * edge, COL_EDGE);
+  printAt(s, bx,     by, color);                                     // 제 색으로 한 번
+  printAt(s, bx + 1, by, color);                                     // 1픽셀 옆으로 한 번 더 — 굵게
 }
 
 // 안내 문구 한 줄을 검은 화면 가운데에 띄운다(사진 동기화 진행 상황 등).
 static void drawStatus(const char *msg) {
   if (frame) {
     for (int i = 0; i < 480 * 480; i++) frame[i] = 0x0000;
-    gfx->draw16bitRGBBitmap(0, 0, frame, 480, 480);
+    blitFrame();
   } else {
     gfx->fillScreen(0x0000);
   }
-  drawCenteredUTF8(msg, 240, 240, 3, COL_WHITE);
+  drawCenteredUTF8(msg, 240, 240, PX_STATUS, COL_WHITE);
 }
+
+// ── 불러오는 중 표시 (가장자리를 도는 고리) ─────────────────────────
+// 서버에 무엇을 물을 때(이름·잔액 조회, 출석 지급, 설정 받기, 사진 내려받기)
+// 화면 테두리를 따라 짧은 금색 고리가 돈다 — 멈춰 있는 것과 기다리는 중인 것을 가른다.
+// 서버 왕복은 수백 ms 동안 loop 를 붙잡고 있어서, 그리는 일은 따로 띄운 작은 일꾼이 맡는다.
+// 그 사이 loop 는 소켓을 기다리며 쉬고 있으므로 이 일꾼이 돌 틈이 난다.
+// 지울 때는 frame(지금 화면 그림)에서 그 자리 색을 되살린다 — 배경을 다시 그릴 필요가 없다.
+// 그림은 gfx->writePixelPreclipped 로 화면 버퍼에 바로 쓴다(startWrite 묶음을 건드리지 않는다 —
+// loop 가 한창 그리는 중일 수 있어, 둘이 같은 묶음 상태를 주무르면 화면이 얼룩진다).
+#define SPIN_R_IN    226         // 고리 안쪽 반지름(화면 반지름은 240)
+#define SPIN_R_OUT   236         // 고리 바깥쪽 반지름
+#define SPIN_SPAN    50          // 고리 조각이 덮는 각도
+#define SPIN_STEP    14          // 한 칸에 도는 각도
+#define SPIN_MS      40          // 한 칸 도는 데 걸리는 시간
+#define SPIN_COLOR   COL_GOLD
+
+static volatile bool spinWant = false;   // 돌려 달라(서버와 이야기하는 동안)
+static volatile bool spinBusy = false;   // 지금 화면에 조각이 올라가 있다
+static volatile int  spinDepth = 0;      // 겹쳐 부른 횟수(사진 동기화 안에서 또 부른다)
+static volatile bool spinPause = false;  // 화면을 통째로 옮기는 중 — 잠깐 비켜 있어라
+static int spinAt = 0;                   // 지금 조각이 놓인 각도
+
+// 고리 조각 하나를 그리거나(erase=false) 지운다(erase=true — frame 의 색으로 되돌린다).
+static void spinArc(int deg, bool erase) {
+  if (!frame) return;                    // 되돌릴 그림이 없으면 아예 그리지 않는다
+  for (int i = 0; i <= SPIN_SPAN * 4; i++) {            // 0.25°씩 — 바깥 둘레에서도 점이 안 벌어진다
+    const float a = (deg + i * 0.25f) * 0.01745329f;
+    const float cs = cosf(a), sn = sinf(a);
+    for (int r = SPIN_R_IN; r <= SPIN_R_OUT; r++) {
+      const int x = 240 + (int)(r * cs), y = 240 + (int)(r * sn);
+      if (x < 0 || x >= 480 || y < 0 || y >= 480) continue;
+      gfx->writePixelPreclipped(x, y, erase ? frame[y * 480 + x] : SPIN_COLOR);
+    }
+  }
+}
+
+// 화면 한 장(460KB)을 통째로 패널에 옮기는 동안에는 고리를 쉬게 한다 —
+// 같은 순간에 둘이 PSRAM 을 두드리면 패널이 그림을 제때 못 읽어 화면이 밀린다.
+// 통째로 다시 깔렸으니 앞 조각은 저절로 지워진 셈이라 지울 필요도 없다.
+static void blitFrame() {
+  spinPause = true;
+  gfx->draw16bitRGBBitmap(0, 0, frame, 480, 480);
+  spinBusy  = false;
+  spinPause = false;
+}
+
+static void spinnerTask(void *) {
+  for (;;) {
+    if (spinPause) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+    if (!spinWant) {
+      if (spinBusy) { spinArc(spinAt, true); spinBusy = false; }   // 마지막 조각을 치운다
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    if (spinBusy) spinArc(spinAt, true);                 // 앞 조각을 지우고
+    spinAt = (spinAt + SPIN_STEP) % 360;
+    spinArc(spinAt, false);                              // 한 칸 옮겨 그린다
+    spinBusy = true;
+    vTaskDelay(pdMS_TO_TICKS(SPIN_MS));
+  }
+}
+
+static void spinStart() { spinDepth++; spinWant = true; }
+
+static void spinStop() {
+  if (--spinDepth > 0) return;                           // 겹쳐 부른 것이 남았다 — 계속 돈다
+  spinDepth = 0;
+  spinWant = false;
+  for (int i = 0; i < 100 && spinBusy; i++) vTaskDelay(pdMS_TO_TICKS(5));   // 조각이 치워질 때까지
+}
+
+// 서버를 부르는 함수 맨 앞에 'Spinner spin;' 한 줄만 두면 된다 —
+// 어느 길로 함수를 빠져나가도(중간 return 이 여럿이다) 고리가 반드시 멈춘다.
+struct Spinner {
+  Spinner()  { spinStart(); }
+  ~Spinner() { spinStop(); }
+};
 
 // ── client 연결 상태 점 ─────────────────────────────────────────────
 // (enum LinkState 는 맨 위 '점' 설정 옆에 있다 — 함수 원형보다 앞이라야 한다)
@@ -430,7 +633,7 @@ static void drawIdle() {
   }
   fillBackground(px);
   if (online) overlayConnIcon();
-  gfx->draw16bitRGBBitmap(0, 0, frame, 480, 480);
+  blitFrame();
   drawLinkDot();
   Serial.printf("대기 화면: 사진 %d/%d (%s) · 연결 아이콘 %s\n",
                 photoIdx, photoTotal() - 1, photoLabel(photoIdx), online ? "보임" : "숨김");
@@ -446,18 +649,18 @@ static void drawNfc(const uint16_t *photo, const char *name, long points, const 
     return;
   }
   fillBackground(photo);
-  darkenBand(0, BAND_TOP_H, 110);                      // 상단 띠(사진 43% 남기고 어둡게)
-  darkenBand(BAND_BOT_Y, 480, 110);                    // 하단 띠
-  gfx->draw16bitRGBBitmap(0, 0, frame, 480, 480);      // 사진+띠를 한 번에
+  darkenBand(0, BAND_TOP_H, BAND_KEEP);                // 상단 띠(사진을 조금만 남기고 어둡게)
+  darkenBand(BAND_BOT_Y, 480, BAND_KEEP);              // 하단 띠
+  blitFrame();                                         // 사진+띠를 한 번에
 
-  drawCenteredUTF8(name, 240, BAND_TOP_H / 2, 4, COL_WHITE);   // 상단: 이름
+  drawCenteredUTF8(name, 240, BAND_TOP_H / 2, PX_NAME, COL_WHITE);   // 상단: 이름
 
   char num[24]; commafy(points, num, sizeof(num));
   char pts[32]; snprintf(pts, sizeof(pts), "%s P", num);
   const bool hasNote = note && note[0];
-  drawCenteredUTF8(hasNote ? note : "잔여 포인트", 240, BAND_BOT_Y + 30, 2,
-                   hasNote ? COL_GOLD : COL_WHITE);            // 하단: 라벨(또는 안내)
-  drawCenteredUTF8(pts,                            240, BAND_BOT_Y + 74, 4, COL_GOLD);   // 하단: 숫자
+  drawCenteredUTF8(hasNote ? note : "잔여 포인트", 240, BAND_BOT_Y + 26, PX_LABEL,
+                   hasNote ? COL_GOLD : COL_WHITE);                  // 하단: 라벨(또는 안내)
+  drawCenteredUTF8(pts,                            240, BAND_BOT_Y + 72, PX_POINTS, COL_GOLD);   // 하단: 숫자
   drawLinkDot();
 
   Serial.printf("NFC 화면: uid=%s 이름=%s 포인트=%ld%s%s\n", nfcUid, name, points,
@@ -577,6 +780,25 @@ static void showNfc(const char *uid, const char *name, long points, bool known,
   sendState();
 }
 
+// 시험 화면 — 카드도 서버도 없이 NFC 화면을 띄운다(글자 크기·자리를 눈으로 보려고).
+// 시리얼 't' 를 누를 때마다 다음 보기로 넘어가고, 한 번 띄우면 1분 동안 그대로 둔다
+// (6초 만에 사라지면 들여다볼 새가 없다). 'n'·'h' 를 누르면 곧바로 대기 화면으로 돌아간다.
+static void showTestScreen() {
+  static const struct { const char *name; long points; const char *note; } SAMPLES[] = {
+    {"김영민",      1205, "출석 완료 +5P"},
+    {"박하은",     12340, ""},
+    {"남궁민수현", 999999, "출석 완료 +5P"},   // 긴 이름 — 글자가 저절로 한 단계 작아진다
+    {"똠방각하",      30, "이미 출석했어요"},  // 굴림에 없는 글자 — quan7 로 되돌려 그린다
+  };
+  const int n = sizeof(SAMPLES) / sizeof(SAMPLES[0]);
+  static int i = 0;
+  Serial.printf("[명령] 시험 화면 %d/%d — %s · %ld P%s%s\n", i + 1, n, SAMPLES[i].name, SAMPLES[i].points,
+                SAMPLES[i].note[0] ? " · " : "", SAMPLES[i].note);
+  showNfc("TEST", SAMPLES[i].name, SAMPLES[i].points, true, SAMPLES[i].note);
+  nfcUntil = millis() + 60000;                 // 1분 동안 세워 둔다
+  i = (i + 1) % n;
+}
+
 // ── microSD (SDMMC 1-bit) ───────────────────────────────────────────
 // LILYGO T-RGB 는 SD 를 SDMMC 1-bit 로 붙인다. SD_CS(IO07)는 GPIO 가 아니라 XL9535 확장칩(bus)의
 // 인에이블 핀이라, SD_MMC.begin 전에 확장칩으로 HIGH 로 켜야 카드가 잡힌다(공식 installSD 와 같은 순서).
@@ -655,6 +877,7 @@ static void saveVersion(const char *uid, const char *img) {
 
 // 사진 한 장(480×480 RGB565, 460800B)을 내려받아 /talent/<UID>.565 로 저장. 성공하면 true.
 static bool downloadPhoto(const char *img, const char *uid) {
+  Spinner spin;                                 // 받는 동안 테두리 고리를 돌린다
   char url[192];
   snprintf(url, sizeof(url), "%s/api/talent/photo/device/%s", TALENT_SERVER, img);
 
@@ -697,6 +920,7 @@ static bool downloadPhoto(const char *img, const char *uid) {
 
 // 서버 이름표를 받아, 사진이 있는 UID 마다 480 사진을 내려받아 SD 로 동기화한다.
 static void syncPhotos() {
+  Spinner spin;                                 // 이름표부터 사진까지 — 끝날 때까지 돈다
   if (WiFi.status() != WL_CONNECTED) { drawStatus("와이파이가 없습니다"); delay(1500); goIdle(); return; }
   if (!sdReady)                      { drawStatus("SD 카드가 없습니다"); delay(1500); goIdle(); return; }
 
@@ -735,7 +959,7 @@ static void syncPhotos() {
   }
 
   Serial.printf("[동기화] 새로 받음 %d · 그대로 %d · 실패 %d (모두 %d)\n", ok, same, total - ok - same, total);
-  char m[48]; snprintf(m, sizeof(m), "완료 — 새 사진 %d 장", ok);
+  char m[48]; snprintf(m, sizeof(m), "완료 - 새 사진 %d 장", ok);
   Serial.printf("[동기화] %s\n", m);
   drawStatus(m); delay(2000);
   scanPhotos();                                 // 새로 받은 사진까지 넘겨 볼 목록에 넣는다
@@ -747,6 +971,7 @@ static void syncPhotos() {
 // 못 받으면 아무것도 바꾸지 않는다 — 들고 있던 값(또는 펌웨어 기본값)으로 계속 돈다.
 // 와이파이가 흔들릴 때마다 밝기가 튀거나 출석모드가 꺼지면 현장에서 더 혼란스럽다.
 static void fetchConfig() {
+  Spinner spin;
   cfgNextAt = millis() + CONFIG_TTL_MS;
   if (WiFi.status() != WL_CONNECTED) return;
 
@@ -787,6 +1012,7 @@ static void fetchConfig() {
 // 예전에는 리더(nfcProjectClient)가 이 일을 했다. 서버와 말하는 쪽을 디스플레이 하나로
 // 모으면서 이리로 옮겼다 — 출석 지급도 여기서 하므로 한 태깅이 한 곳에서만 처리된다.
 static bool lookupTalent(const char *uid, char *name, size_t nameCap, long *points, bool *known) {
+  Spinner spin;
   if (WiFi.status() != WL_CONNECTED) return false;
   char url[192];
   snprintf(url, sizeof(url), "%s/api/talent/feed?uid=%s&limit=0", TALENT_SERVER, uid);
@@ -816,6 +1042,7 @@ static bool lookupTalent(const char *uid, char *name, size_t nameCap, long *poin
 // 기기는 현장에 놓인 물건이라 요청을 흉내 내기 쉬운데, 값이 서버에만 있으면 그래 봐야
 // 관리자가 정한 범위를 벗어나지 못한다(v1.0 리더와 같은 규칙).
 static bool attendEarn(const char *uid, char *name, size_t nameCap, long *points, long *delta) {
+  Spinner spin;
   if (WiFi.status() != WL_CONNECTED) return false;
   char url[160];
   snprintf(url, sizeof(url), "%s/api/talent/earn", TALENT_SERVER);
@@ -1150,6 +1377,10 @@ void setup() {
 
   drawIdle();                    // 기본 화면 — 활성 그림, 아이콘 없음(아직 안 붙었다)
 
+  // 서버를 기다리는 동안 테두리 고리를 돌릴 일꾼. loop 와 같은 심(1)에 같은 순위로 둔다 —
+  // loop 가 소켓을 기다리며 쉬는 틈에만 돌아, 평소 화면 그리기를 밀어내지 않는다.
+  xTaskCreatePinnedToCore(spinnerTask, "spinner", 4096, nullptr, 1, nullptr, 1);
+
   // 4) 백라이트를 마지막에 켠다 — 먼저 켜면 그리는 동안 빈 화면이 번쩍인다.
   pinMode(PIN_BL, OUTPUT);
   backlightOn(cfgBacklight);     // 서버에 붙기 전까지는 펌웨어 기본값(BL_LEVEL)
@@ -1157,6 +1388,13 @@ void setup() {
 
   touchBegin();                  // 화면을 켠 뒤에 — 확장칩(bus)이 begin() 에서 준비된다
 
+  // 와이파이 설정을 플래시(NVS)에 저장하지 않는다 — **화면 밀림의 주범**이다.
+  // WiFi.begin() 은 기본값으로 SSID·비밀번호를 NVS 에 적는데, 플래시에 쓰는 동안에는
+  // 캐시가 잠깐 꺼진다. 이 칩의 RGB 패널 갱신 인터럽트는 IRAM 에 없어서(코어 기본 설정)
+  // 그 사이 중계 버퍼를 못 채우고, 패널로 가는 그림이 한 줄씩 밀린다.
+  // 공유기를 못 찾아 네 곳을 번갈아 걸 때마다 쓰기가 나므로 그때 자주 밀린다.
+  // 설정은 어차피 config.h 에 있어 저장할 이유가 없다.
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);          // 서버라 잠들지 않게 — 명령을 놓치지 않는다
   wifiService();                 // 붙어 보기 시작(기다리지 않는다)
@@ -1221,8 +1459,13 @@ void loop() {
                       serversUp ? webSocket.connectedClients() : 0,
                       online ? WiFi.localIP().toString().c_str() : "끊김");
         break;
+      case 't': case 'T': showTestScreen(); break;
+      case 'g': case 'G':                          // 고리가 도는지 눈으로 보기(서버 없이)
+        Serial.println("[명령] 불러오는 중 고리 3초");
+        spinStart(); delay(3000); spinStop();      // delay 는 쉬는 것이라 그동안 일꾼이 돈다
+        break;
       case 'r': case 'R': Serial.println("[명령] 재부팅합니다..."); Serial.flush(); ESP.restart(); break;
-      case '?':           Serial.println("[명령] n 다음 · p 이전 · h 활성 · s 사진 목록 · l SD 목록 · c 설정 받기 · i 상태 · r 재부팅"); break;
+      case '?':           Serial.println("[명령] n 다음 · p 이전 · h 활성 · s 사진 목록 · l SD 목록 · c 설정 받기 · i 상태 · t 시험 화면 · g 고리 · r 재부팅"); break;
       default: break;
     }
   }
