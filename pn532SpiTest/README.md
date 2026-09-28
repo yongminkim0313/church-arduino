@@ -44,8 +44,7 @@ Elechouse V3(빨간 보드)는 딥스위치 두 개로 고른다. 보통 이렇�
 
 ```bash
 cd ~/workspace/arduino
-arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
-  --libraries ~/Documents/Arduino/libraries pn532SpiTest
+arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app pn532SpiTest
 arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
   -p /dev/cu.usbmodem* pn532SpiTest
 ```

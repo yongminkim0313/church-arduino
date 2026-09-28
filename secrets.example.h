@@ -1,7 +1,7 @@
 #pragma once
 // 교회 아두이노 프로젝트 공용 인증정보.
-// 저장소 밖(Arduino 라이브러리 폴더)에 있으므로 커밋될 일이 없다.
-// 위치: ~/Documents/Arduino/libraries/ChurchSecrets/ChurchSecrets.h
+// 아두이노 라이브러리 폴더(.gitignore 대상)에 있으므로 커밋될 일이 없다.
+// 위치: ~/workspace/arduino/libraries/ChurchSecrets/ChurchSecrets.h
 // 사용: #include <ChurchSecrets.h>
 
 #define WIFI_SSID     "YOUR_WIFI_SSID"

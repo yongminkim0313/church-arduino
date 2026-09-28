@@ -32,11 +32,11 @@ T-Display에 교회 로고 + 비둘기 날아드는 애니메이션 표시. 위�
 기본으로 `~/Library/Fonts/NanumGothicBold.ttf` 를 쓴다. 다른 폰트를 쓰려면 경로를 넘긴다:
 `./tools/make-fonts.sh /경로/폰트.ttf`
 
-WiFi 비밀번호 등 인증정보도 저장소 밖에 둔다. [secrets.example.h](secrets.example.h) 를
+WiFi 비밀번호 등 인증정보는 커밋되지 않는 `libraries/` 아래에 둔다. [secrets.example.h](secrets.example.h) 를
 복사해 채운 뒤 아래 위치에 두면 모든 스케치가 `#include <ChurchSecrets.h>` 로 공유한다.
 
 ```
-~/Documents/Arduino/libraries/ChurchSecrets/ChurchSecrets.h
+~/workspace/arduino/libraries/ChurchSecrets/ChurchSecrets.h
 ```
 
 필요한 라이브러리:

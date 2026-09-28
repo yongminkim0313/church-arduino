@@ -558,7 +558,7 @@ POST /api/talent/earn
 
 **기기 키**: 달란트는 포인트라 인증 없이 열면 누구나 지급할 수 있다. 그래서 쓰기는
 `x-talent-key` 헤더를 서버의 `TALENT_DEVICE_KEY`(.env)와 대조한다. 기기 쪽 값은
-`~/Documents/Arduino/libraries/ChurchSecrets/ChurchSecrets.h` 에 있다. 두 값이 같아야 한다.
+`~/workspace/arduino/libraries/ChurchSecrets/ChurchSecrets.h` 에 있다. 두 값이 같아야 한다.
 
 **네트워크가 끊기면 처리하지 않는다.** 화면에 사유를 띄우고 실패음을 낸다.
 잔액은 건드리지 않으므로 나중에 다시 태깅하면 된다. (오프라인 대기열은 넣지 않았다)

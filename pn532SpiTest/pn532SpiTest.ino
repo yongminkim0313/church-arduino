@@ -45,8 +45,7 @@
 //   reinit          PN532 를 처음부터 다시 잡는다
 //
 // ── 빌드 ────────────────────────────────────────────────────────────
-//   arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
-//     --libraries ~/Documents/Arduino/libraries pn532SpiTest
+//   arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app pn532SpiTest
 //   arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
 //     -p /dev/cu.usbmodem* pn532SpiTest
 

@@ -20,7 +20,7 @@ __pycache__/
 *.elf
 *.map
 
-# 인증정보 — 실제 값은 저장소 밖(~/Documents/Arduino/libraries/ChurchSecrets/)에 둔다.
+# 인증정보 — 실제 값은 ~/workspace/arduino/libraries/ChurchSecrets/ 에 둔다(libraries/ 는 위에서 무시).
 # secrets.example.h 만 템플릿으로 남긴다.
 ChurchSecrets.h
 secrets.h

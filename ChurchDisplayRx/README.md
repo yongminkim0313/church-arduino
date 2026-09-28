@@ -231,10 +231,10 @@ ESP32 DRAM 320KB 중 상당량을 차지한다. 그래서 이전 버전과 달�
 
 ## 인증정보
 
-WiFi 비밀번호는 스케치에 넣지 않고 저장소 **밖** 공용 헤더에서 가져온다:
+WiFi 비밀번호는 스케치에 넣지 않고 **커밋되지 않는** 공용 헤더에서 가져온다:
 
 ```
-~/Documents/Arduino/libraries/ChurchSecrets/ChurchSecrets.h
+~/workspace/arduino/libraries/ChurchSecrets/ChurchSecrets.h
 ```
 
 `WIFI_SSID`, `WIFI_PASSWORD`, `SENSOR_POST_URL`, `WS_HOST_LOCAL` 을 정의하며

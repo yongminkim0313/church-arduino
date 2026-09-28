@@ -14,8 +14,7 @@
 
 ```bash
 cd ~/workspace/arduino
-arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
-  --libraries ~/Documents/Arduino/libraries pn532Test
+arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app pn532Test
 arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
   -p /dev/cu.usbmodem* pn532Test
 arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200

@@ -144,7 +144,6 @@ I2C 슬레이브는 **먼저 말을 걸 수 없다.** 읽은 UID 를 칸에 적�
 ## 빌드·업로드
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
-  --library ~/Documents/Arduino/libraries/Adafruit_PN532 --library ~/Documents/Arduino/libraries/Adafruit_BusIO \
   nfcProjectClient
 ```
 

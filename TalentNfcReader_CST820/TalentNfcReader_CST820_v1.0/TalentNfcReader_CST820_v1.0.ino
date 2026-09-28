@@ -67,7 +67,7 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <Arduino_GFX_Library.h>
-#include <ChurchSecrets.h>       // 와이파이·서버 주소·기기 키(저장소 밖 ~/Documents/Arduino/libraries/ChurchSecrets)
+#include <ChurchSecrets.h>       // 와이파이·서버 주소·기기 키(~/workspace/arduino/libraries/ChurchSecrets — 커밋 안 됨)
 #include "useDisable.h"          // USEDISABLE[480×480] — 사용 비활성(기본 화면)
 #include "useEnable.h"           // USEENABLE[480×480]  — 사용 활성(터치하면)
 #include "connected.h"           // CONNECTED[50×35]    — 연결 아이콘(와이파이에 붙었을 때만 겹친다)
