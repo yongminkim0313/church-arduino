@@ -12,6 +12,10 @@ static Arduino_RGB_Display*    s_gfx   = nullptr;
 static const int16_t OX = (TR_PANEL_W - TR_UI_W) / 2;
 static const int16_t OY = (TR_PANEL_H - TR_UI_H) / 2;
 
+// 화면 타이밍 — 위 init() 주석 참고
+static const int32_t TR_PCLK_HZ      = 8000000L;   // LILYGO 자기 드라이버와 같은 값
+static const int     TR_BOUNCE_LINES = 10;         // 중계 버퍼 한 장이 담는 줄 수 — 480 줄을 48번에 나눠 담는다
+
 uint16_t* PanelTFT::fb() const { return s_gfx ? s_gfx->getFramebuffer() : nullptr; }
 
 void PanelTFT::init() {
@@ -23,6 +27,21 @@ void PanelTFT::init() {
 
   // RGB 병렬 타이밍 — LILYGO 의 Arduino_GFX 예제 값 그대로다.
   // 색이 뒤집혀 보이면(빨강↔파랑) 아래 R 묶음과 B 묶음을 맞바꾼다.
+  //
+  // 뒤의 두 값(픽셀 클럭·중계 버퍼)은 사진을 받을 때 화면이 자글거리던 것을 잡으려고 넣었다.
+  // 자세한 까닭은 README '사진을 받을 때 화면이 자글거린다' 를 볼 것. 요점만 적으면,
+  // 이 화면은 PSRAM 의 프레임버퍼를 LCD 가 **실시간으로** 읽어 뿌리는 구조라 PSRAM 이
+  // 한순간이라도 늦으면 그 줄이 깨져 나간다. 내려받는 동안에는 TLS 버퍼(4KB 넘는 것은
+  // PSRAM 에 잡힌다)와 파일 쓰기가 같은 PSRAM 을 두드려 늦어진다.
+  //
+  //  · 픽셀 클럭 8MHz — 라이브러리 기본값은 옥탈 PSRAM 일 때 12MHz 다. 480×480 에
+  //    포치를 더하면 561×531 = 297,891 픽셀이라 12MHz 는 초당 24MB 를 PSRAM 에서
+  //    끌어간다. LILYGO 자기 드라이버(LilyGo_RGBPanel.cpp)는 8MHz 를 쓴다 — 16MB/s 로
+  //    내려 여유를 둔다(화면 갱신 40Hz → 27Hz, 정지 화면이라 눈에 띄지 않는다).
+  //  · 중계 버퍼(bounce buffer) — LCD 가 PSRAM 을 직접 읽지 않고, 내부 SRAM 에 잡은
+  //    두 개의 작은 버퍼를 번갈아 읽게 한다. CPU 가 인터럽트에서 프레임버퍼 → 버퍼로
+  //    한 묶음씩 미리 옮겨 둔다. 열 줄치(480×10×2B = 9.6KB) 두 장 = 19.2KB 를 내부
+  //    SRAM 에서 쓰는 대신, PSRAM 이 잠깐 늦어도 그 열 줄만큼 버틴다.
   s_rgb = new Arduino_ESP32RGBPanel(
       45 /* DE */, 41 /* VSYNC */, 47 /* HSYNC */, 42 /* PCLK */,
       21 /* R0 */, 18 /* R1 */, 17 /* R2 */, 16 /* R3 */, 15 /* R4 */,
@@ -30,7 +49,10 @@ void PanelTFT::init() {
       7  /* B0 */, 6  /* B1 */, 5  /* B2 */, 3  /* B3 */, 2  /* B4 */,
       1 /* hsync_polarity */, 50 /* hsync_front_porch */, 1 /* hsync_pulse_width */, 30 /* hsync_back_porch */,
       1 /* vsync_polarity */, 20 /* vsync_front_porch */, 1 /* vsync_pulse_width */, 30 /* vsync_back_porch */,
-      1 /* pclk_active_neg */);
+      1 /* pclk_active_neg */,
+      TR_PCLK_HZ /* 픽셀 클럭 */, false /* useBigEndian */,
+      0 /* de_idle_high */, 0 /* pclk_idle_high */,
+      TR_PANEL_W * TR_BOUNCE_LINES /* 중계 버퍼(픽셀 수) — 프레임버퍼 크기의 약수라야 한다 */);
 
   // 2.1인치 원형 화면의 초기화 표는 Arduino_GFX 가 들고 있다(st7701_type4).
   // 2.8인치 판은 type20 이다 — 보드를 바꾸면 여기를 갈아 끼운다.
@@ -42,7 +64,8 @@ void PanelTFT::init() {
   Wire.begin(TR_I2C_SDA, TR_I2C_SCL, 400000);
 
   if (!s_gfx->begin()) {           // PSRAM 이 없으면 460KB 프레임버퍼를 못 잡는다
-    Serial.println("[화면] 시작 실패 — PSRAM(opi) 설정을 확인하세요");
+    // 중계 버퍼(19.2KB)는 내부 SRAM 에서 잡는다 — 내부 메모리가 모자라도 여기서 걸린다
+    Serial.println("[화면] 시작 실패 — PSRAM(opi) 설정 또는 내부 메모리를 확인하세요");
     _ready = false;
     return;
   }

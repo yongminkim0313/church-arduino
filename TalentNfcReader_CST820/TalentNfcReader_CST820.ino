@@ -2972,7 +2972,8 @@ static void uidToStr(const uint8_t* uid, uint8_t len, char* out, size_t cap) {
 
 // 결과·오류를 몇 초 띄우고 원래 탭으로 돌아간다.
 #define OVERLAY_MS 3000
-// 헤더 띠 두 번 터치로 보는 시간 — 첫 누름 뒤 이 안에 한 번 더 누르면 두 번(학생 사진 모두 받기)
+// 헤더 띠를 몇 번 눌렀는지 세는 시간 — 앞 누름 뒤 이 안에 다시 누르면 이어서 센다.
+// 한 번(내역) · 두 번(학생 사진 모두 받기) · 세 번(받아 둔 사진 지우고 처음부터 다시 받기)
 #define HEAD_DOUBLE_MS 450
 // 내역 탭의 잔액 조회는 읽을 것이 여러 줄이라 조금 더 오래 둔다.
 #define WHO_OVERLAY_MS 5000
@@ -3131,7 +3132,31 @@ static void drawPhotoSync(const char* title, uint16_t done, uint16_t total, cons
   tft.drawString(n, tft.width() / 2, cy + 44, 4);
 }
 
-static void photoSyncAll() {
+// ── 받아 둔 사진을 모두 지운다 (헤더 띠 세 번 터치의 앞단) ──
+// 평소에는 파일 이름에 해시가 들어 있어 "있다 = 최신" 이라 다시 받을 일이 없다.
+// 그래도 처음부터 다시 받아야 할 때가 있다 — 사진이 뭉개져 보이거나, 크기를 바꿨거나(PHOTO_PX),
+// 파일이 성한지 의심스러울 때다. 그때 쓰는 길이다.
+// 아이 사진(ph-)만 지운다 — 배경·카드 그림은 설정에서 따라오는 것이라 여기서 건드리지 않는다.
+static uint16_t photoWipe() {
+  fs::File dir = LittleFS.open(ART_DIR);
+  if (!dir || !dir.isDirectory()) return 0;
+  uint16_t n = 0;
+  for (fs::File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    const char* name = f.name();
+    if (strncmp(name, "ph-", 3)) continue;
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%s", ART_DIR, name);
+    f.close();
+    if (LittleFS.remove(path)) n++;
+  }
+  photoCursor = 0;                           // 조용할 때 받기도 처음부터 다시 훑는다
+  return n;
+}
+
+// wipe — 받아 둔 사진을 먼저 다 지우고 처음부터 받는다(세 번 터치).
+// 지우는 것은 **명단을 받은 뒤**다. 와이파이가 끊겼거나 명단을 못 받으면 한 장도 다시
+// 받지 못하므로, 그때는 있던 사진을 그대로 두고 물러난다.
+static void photoSyncAll(bool wipe = false) {
   sndMode();
   overlayUntil = 0;
   resetStep();
@@ -3150,6 +3175,13 @@ static void photoSyncAll() {
     drawErrorScreen("명단을 받지 못했습니다");
     overlayUntil = millis() + OVERLAY_MS;
     return;
+  }
+
+  uint16_t wiped = 0;
+  if (wipe) {
+    drawPhotoSync("사진 지우는 중", 0, 0, "");
+    wiped = photoWipe();
+    Serial.printf("[사진] 지움 %u장 — 처음부터 다시 받습니다\n", wiped);
   }
 
   uint16_t total = 0;
@@ -3194,8 +3226,8 @@ static void photoSyncAll() {
   }
   if (!stopped) photoCursor = rosterCount;   // 다 훑었다 — 조용할 때 받기는 할 일이 없다
   artPrune();                                // 명단에서 빠진 아이의 옛 사진을 치운다(명단을 막 받았다)
-  Serial.printf("[사진] 모두 받기 — 새로 %u · 있음 %u · 실패 %u%s\n",
-                got, have, failed, stopped ? " (멈춤)" : "");
+  Serial.printf("[사진] 모두 받기 — 지움 %u · 새로 %u · 있음 %u · 실패 %u%s\n",
+                wiped, got, have, failed, stopped ? " (멈춤)" : "");
 
   // 결과
   clearContent();
@@ -3203,10 +3235,14 @@ static void photoSyncAll() {
   useFont(20);
   tft.setTextDatum(MC_DATUM);
   contentText(inkMain());
-  tft.drawString(stopped ? "사진 받기를 멈췄습니다" : "학생 사진을 받았습니다", tft.width() / 2, cy - 40);
+  tft.drawString(stopped ? "사진 받기를 멈췄습니다"
+                         : (wipe ? "사진을 다시 받았습니다" : "학생 사진을 받았습니다"),
+                 tft.width() / 2, cy - 40);
   useFont(14);
   char l1[48], l2[48];
-  snprintf(l1, sizeof(l1), "새로 받음 %u장 · 이미 있음 %u장", (unsigned)got, (unsigned)have);
+  // 지우고 받았으면 '이미 있음' 은 늘 0 이라 적을 것이 못 된다 — 지운 장수를 대신 보인다
+  if (wipe) snprintf(l1, sizeof(l1), "지움 %u장 · 새로 받음 %u장", (unsigned)wiped, (unsigned)got);
+  else      snprintf(l1, sizeof(l1), "새로 받음 %u장 · 이미 있음 %u장", (unsigned)got, (unsigned)have);
   contentText(inkSub());
   tft.drawString(total ? l1 : "사진을 올린 학생이 없습니다", tft.width() / 2, cy - 6);
   if (failed) {
@@ -3534,28 +3570,36 @@ void loop() {
   uint16_t tx, ty;
   const bool touching = tft.getTouch(&tx, &ty);
 
-  // ── 헤더 띠: 한 번 = 내역, 두 번 = 학생 사진 모두 받기 ──
-  // 두 번을 세려면 '누른 채' 가 아니라 **누르는 순간**(떼었다가 다시 누름)을 세야 한다 — 디바운스로는
-  // 누른 채 있는 손가락도 몇 백 ms 마다 다시 눌림으로 들어온다. 첫 누름 뒤 HEAD_DOUBLE_MS 안에 한 번 더 누르면
-  // 두 번, 그 시간이 지나도록 없으면 한 번으로 처리한다(그래서 내역은 그만큼 늦게 열린다).
+  // ── 헤더 띠: 한 번 = 내역, 두 번 = 학생 사진 모두 받기, 세 번 = 지우고 처음부터 다시 받기 ──
+  // 몇 번인지 세려면 '누른 채' 가 아니라 **누르는 순간**(떼었다가 다시 누름)을 세야 한다 — 디바운스로는
+  // 누른 채 있는 손가락도 몇 백 ms 마다 다시 눌림으로 들어온다. 앞 누름 뒤 HEAD_DOUBLE_MS 안에 다시
+  // 누르면 이어서 세고, 그 시간이 지나도록 없으면 거기까지로 보고 처리한다.
   // 120ms 보다 짧게 이어진 누름은 한 번 누르는 사이 터치가 잠깐 끊긴 것으로 보고 세지 않는다.
+  //
+  // 세 번까지 세게 되면서 **두 번도 0.45초 기다린 뒤에** 움직인다(전에는 두 번째 누름에서 바로 갔다).
+  // 세 번째가 올지 봐야 하기 때문이다 — 세 번은 더 기다릴 것이 없어 그 자리에서 간다.
   static bool touchWasDown = false;
   static uint32_t headTapMs = 0;
+  static uint8_t  headTaps  = 0;
   const bool pressEdge = touching && !touchWasDown;
   touchWasDown = touching;
   if (pressEdge && histHit(tx, ty)) {
     lastTouchMs = now;
     lastActivity = now;
-    if (headTapMs && now - headTapMs >= 120 && now - headTapMs <= HEAD_DOUBLE_MS) {
-      headTapMs = 0;
-      photoSyncAll();
-      return;
+    if (!headTaps || now - headTapMs >= 120) {       // 끊겼다 이어진 한 번이 아니라 새 누름이다
+      headTapMs = now;
+      if (++headTaps >= 3) {
+        headTaps = 0;
+        photoSyncAll(true);                          // 세 번 — 지우고 처음부터
+        return;
+      }
     }
-    if (!headTapMs || now - headTapMs >= 120) headTapMs = now;
   }
-  if (headTapMs && now - headTapMs > HEAD_DOUBLE_MS) {
-    headTapMs = 0;
-    headerTap(now);
+  if (headTaps && now - headTapMs > HEAD_DOUBLE_MS) {
+    const uint8_t taps = headTaps;
+    headTaps = 0;
+    if (taps >= 2) photoSyncAll(false);              // 두 번 — 없는 것만 받기
+    else           headerTap(now);                   // 한 번 — 내역
     return;
   }
 
