@@ -42,3 +42,7 @@ libraries/
 
 # Node (테스트 서버)
 node_modules/
+
+# VSCode Arduino 확장이 만드는 설정. 시리얼 포트(/dev/tty.usbmodem…)가 들어 있어
+# 기계·USB 포트마다 달라진다 — 공유할 값이 아니다.
+**/.vscode/arduino.json
